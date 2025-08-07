@@ -1,0 +1,15 @@
+.envrc
+.cache
+.claude
+build
+compile_commands.json
+
+# services
+/services/scorbit-token
+
+# Devenv
+.devenv*
+devenv.local.nix
+
+# direnv
+.direnv
