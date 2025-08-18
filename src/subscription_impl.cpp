@@ -126,34 +126,12 @@ auto SubscriptionImpl::init() -> void
             sendSubscribeCmd();
         }
     });
-
-    onReplyReceivedConnection_ = connection_.onReplyReceived().connect([this](Reply const &reply) {
-        if (waitingReplies_.erase(reply.id) == 0) {
-            return;
-        }
-        if (reply.error) {
-            errorSignal_(Error {static_cast<ErrorType>(reply.error->code), reply.error->message});
-            return;
-        }
-        assert(reply.result);
-
-        std::visit(
-                [this](auto const &result) {
-                    using ResultType = std::decay_t<decltype(result)>;
-
-                    if constexpr (std::is_same_v<ResultType, SubscribeResult>) {
-                        setState(SubscriptionState::SUBSCRIBED);
-                    }
-                },
-                *reply.result);
-    });
 }
 
 auto SubscriptionImpl::deinit() -> void
 {
     onConnectingConnection_.disconnect();
     onConnectedConnection_.disconnect();
-    onReplyReceivedConnection_.disconnect();
 }
 
 auto SubscriptionImpl::sendCmd(Command &&cmd) -> void
@@ -167,6 +145,29 @@ auto SubscriptionImpl::sendSubscribeCmd() -> void
     auto req = SubscribeRequest {};
     req.channel = channel_;
     sendCmd(makeCommand(std::move(req)));
+}
+
+auto SubscriptionImpl::handleReply(Reply const &reply) -> bool
+{
+    if (waitingReplies_.erase(reply.id) == 0) {
+        return false;
+    }
+    if (reply.error) {
+        errorSignal_(Error {static_cast<ErrorType>(reply.error->code), reply.error->message});
+        return true;
+    }
+    assert(reply.result);
+
+    std::visit(
+            [this](auto const &result) {
+                using ResultType = std::decay_t<decltype(result)>;
+
+                if constexpr (std::is_same_v<ResultType, SubscribeResult>) {
+                    setState(SubscriptionState::SUBSCRIBED);
+                }
+            },
+            *reply.result);
+    return true;
 }
 
 auto SubscriptionImpl::setState(SubscriptionState newState) -> void

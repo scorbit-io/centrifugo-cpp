@@ -27,6 +27,12 @@ public:
         : connection_ {strand, std::move(url), std::move(config)}
     {
         connection_.onReplyReceived().connect([this](Reply const &reply) {
+            for (auto &[channel, subscription] : subscriptions_) {
+                if (subscription.handleReply(reply)) {
+                    return;
+                }
+            }
+
             if (reply.error) {
                 // TODO: report error to user
                 return;

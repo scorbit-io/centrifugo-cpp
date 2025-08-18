@@ -36,6 +36,7 @@ public:
     auto unsubscribe() -> void;
     auto publish(nlohmann::json const &json) -> outcome::result<void, Error>;
 
+    auto handleReply(Reply const &reply) -> bool;
     auto handlePublish(Publication const &publication) -> void;
 
     auto onSubscribing() -> SubscribingSignal &;
