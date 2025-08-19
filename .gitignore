@@ -1,6 +1,8 @@
 .envrc
 .cache
 .claude
+.vscode
+.DS_Store
 build
 compile_commands.json
 
