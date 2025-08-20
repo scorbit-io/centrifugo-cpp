@@ -115,7 +115,7 @@ auto SubscriptionImpl::onError() -> ErrorSignal &
 
 auto SubscriptionImpl::init() -> void
 {
-    onConnectingConnection_ = connection_.onConnecting().connect([this] {
+    onConnectingConnection_ = connection_.onConnecting().connect([this](auto const &) {
         if (state_ == SubscriptionState::SUBSCRIBED) {
             setState(SubscriptionState::SUBSCRIBING);
         }

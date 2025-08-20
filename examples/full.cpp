@@ -1,3 +1,5 @@
+#include "centrifugo/common.h"
+#include <cstdint>
 #include <functional>
 #include <iostream>
 
@@ -24,7 +26,8 @@ auto getJwtToken() -> std::string
         stream.connect(results);
 
         // Set up HTTP GET request
-        auto req = http::request<http::string_body> {http::verb::get, "/token/cpp-user", 11};
+        auto req = http::request<http::string_body> {http::verb::get,
+                                                     "/token/server-side-user?seconds=300", 11};
         req.set(http::field::host, "localhost:3001");
         req.set(http::field::user_agent, BOOST_BEAST_VERSION_STRING);
 
@@ -58,21 +61,55 @@ auto getJwtToken() -> std::string
 
 int main()
 {
-    boost::asio::io_context ioc;
+    auto ioc = boost::asio::io_context {};
     auto strand = boost::asio::make_strand(ioc);
 
-    centrifugo::Client client(strand, "ws://localhost:8000/connection/websocket",
-                              centrifugo::ClientConfig {"",
-                                                        std::function<std::string()>(getJwtToken),
-                                                        "cpp-user", "1.0.0"});
+    auto config = centrifugo::ClientConfig {};
+    config.getToken = getJwtToken;
+    auto client = centrifugo::Client {strand, "ws://localhost:8000/connection/websocket", config};
 
-    client.onConnecting([] { std::cout << "Connecting to Centrifugo..." << std::endl; });
+    client.onConnecting([](centrifugo::DisconnectReason const &reason) {
+        std::cout << "[CLIENT] Connecting to Centrifugo... ("
+                  << static_cast<std::uint16_t>(reason.code) << ", " << reason.reason << ')'
+                  << std::endl;
+    });
 
-    client.onConnected([] { std::cout << "Connected to Centrifugo!" << std::endl; });
+    client.onConnected([] { std::cout << "[CLIENT] Connected to Centrifugo!" << std::endl; });
 
-    client.onDisconnected([] { std::cout << "Disconnected from Centrifugo" << std::endl; });
+    client.onDisconnected([](centrifugo::DisconnectReason const &reason) {
+        std::cout << "[CLIENT] Disconnected from Centrifugo ("
+                  << static_cast<std::uint16_t>(reason.code) << ", " << reason.reason << ')'
+                  << std::endl;
+    });
 
-    auto subCreateRes = client.newSubscription("testchan");
+    client.onSubscribing([](std::string const &channel) {
+        std::cout << "[SERVER-SUB:" << channel << "] Subscribing..." << std::endl;
+    });
+
+    client.onSubscribed([&client](std::string const &channel) {
+        std::cout << "[SERVER-SUB:" << channel << "] Subscribed successfully!" << std::endl;
+
+        auto pubRes = client.publish(channel, {{"message", "I am freeeeeee!!"}});
+        if (!pubRes) {
+            std::cout << "failed to publish: " << pubRes.error().message << std::endl;
+        }
+    });
+
+    client.onUnsubscribed([](std::string const &channel) {
+        std::cout << "[SERVER-SUB:" << channel << "] Unsubscribed" << std::endl;
+    });
+
+    client.onPublication([](std::string const &channel, centrifugo::Publication const &pub) {
+        std::cout << "[SERVER-SUB:" << channel << "] Publication received:" << std::endl;
+        std::cout << "  Data: " << pub.data << std::endl;
+        std::cout << "  Offset: " << pub.offset << std::endl;
+        if (pub.info) {
+            std::cout << "  From user: " << pub.info->user << " (client: " << pub.info->client
+                      << ")" << std::endl;
+        }
+    });
+
+    auto subCreateRes = client.newSubscription("mychan");
     if (!subCreateRes) {
         std::cout << "failed creating subscription: " << subCreateRes.error() << std::endl;
         return 1;
@@ -112,8 +149,8 @@ int main()
 
     std::cout << "Starting Centrifugo client..." << std::endl;
 
-    if (auto conRes = client.connect(); conRes.has_error()) {
-        std::cout << "failed to connect: " << conRes.error() << std::endl;
+    if (auto const conRes = client.connect(); !conRes) {
+        std::cout << "Failed to connect: " << conRes.error() << std::endl;
         return 1;
     }
 

@@ -14,6 +14,7 @@ enum class ErrorType {
 
     PermissionDenied = 103,
     AlreadySubscribed = 105,
+    TokenExpired = 109,
 };
 
 auto make_error_code(ErrorType e) -> std::error_code;

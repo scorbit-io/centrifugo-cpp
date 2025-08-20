@@ -48,7 +48,7 @@ public:
                     *reply.result);
         });
 
-        connection_.onConnecting().connect([this] {
+        connection_.onConnecting().connect([this](auto const &) {
             if (onSubscribing_) {
                 for (auto const &chan : serverSubscriptions_) {
                     onSubscribing_(chan);
@@ -56,7 +56,7 @@ public:
             }
         });
 
-        connection_.onDisconnected().connect([this] {
+        connection_.onDisconnected().connect([this](auto const &) {
             if (onUnsubscribed_) {
                 for (auto const &chan : serverSubscriptions_) {
                     onUnsubscribed_(chan);
@@ -224,7 +224,7 @@ auto Client::state() const -> ConnectionState
     return pImpl->connection().state();
 }
 
-auto Client::onConnecting(std::function<void()> callback) -> void
+auto Client::onConnecting(std::function<void(DisconnectReason const &)> callback) -> void
 {
     pImpl->connection().onConnecting().connect(callback);
 }
@@ -235,7 +235,7 @@ auto Client::onConnected(std::function<void()> callback) -> void
             [callback = std::move(callback)](auto const &) { callback(); });
 }
 
-auto Client::onDisconnected(std::function<void()> callback) -> void
+auto Client::onDisconnected(std::function<void(DisconnectReason const &)> callback) -> void
 {
     pImpl->connection().onDisconnected().connect(callback);
 }

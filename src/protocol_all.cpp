@@ -6,8 +6,10 @@ using json = nlohmann::json;
 
 auto to_json(json &j, ConnectRequest const &req) -> void
 {
-    j = json {{"token", req.token}, {"name", req.name}};
+    j = json {{"name", req.name}};
 
+    if (!req.token.empty())
+        j["token"] = req.token;
     if (!req.data.empty())
         j["data"] = req.data;
     if (!req.version.empty())
@@ -41,6 +43,11 @@ auto to_json(json &j, SubscribeRequest const &req) -> void
 auto to_json(json &j, PublishRequest const &req) -> void
 {
     j = json {{"channel", req.channel}, {"data", req.data}};
+}
+
+auto to_json(json &j, RefreshRequest const &req) -> void
+{
+    j = json {{"token", req.token}};
 }
 
 auto from_json(json const &j, ConnectResult &result) -> void
@@ -99,6 +106,18 @@ auto from_json(json const &, PublishResult &) -> void
 {
 }
 
+auto from_json(json const &j, RefreshResult &result) -> void
+{
+    if (j.contains("client"))
+        j.at("client").get_to(result.client);
+    if (j.contains("version"))
+        j.at("version").get_to(result.version);
+    if (j.contains("expires"))
+        j.at("expires").get_to(result.expires);
+    if (j.contains("ttl"))
+        j.at("ttl").get_to(result.ttl);
+}
+
 auto to_json(json &j, Command const &cmd) -> void
 {
     j["id"] = cmd.id;
@@ -112,6 +131,8 @@ auto to_json(json &j, Command const &cmd) -> void
                     j["subscribe"] = req;
                 } else if constexpr (std::is_same_v<std::decay_t<decltype(req)>, PublishRequest>) {
                     j["publish"] = req;
+                } else if constexpr (std::is_same_v<std::decay_t<decltype(req)>, RefreshRequest>) {
+                    j["refresh"] = req;
                 }
             },
             cmd.request);
@@ -140,6 +161,8 @@ auto from_json(json const &j, Reply &reply) -> void
         reply.result = j.at("subscribe").get<SubscribeResult>();
     } else if (j.contains("publish")) {
         reply.result = j.at("publish").get<PublishResult>();
+    } else if (j.contains("refresh")) {
+        reply.result = j.at("refresh").get<RefreshResult>();
     } else if (j.contains("push")) {
         reply.result = j.at("push").get<Push>();
     }

@@ -38,6 +38,10 @@ struct PublishRequest {
     nlohmann::json data;
 };
 
+struct RefreshRequest {
+    std::string token;
+};
+
 struct SubscribeResult {
     bool expires {false};
     std::uint32_t ttl {0};
@@ -69,6 +73,13 @@ struct ConnectResult {
 struct PublishResult {
 };
 
+struct RefreshResult {
+    std::string client;
+    std::string version;
+    bool expires {false};
+    std::uint32_t ttl {0};
+};
+
 struct Push {
     std::string channel;
 
@@ -86,7 +97,8 @@ struct ErrorReply {
 struct Command {
     std::uint32_t id;
 
-    using RequestType = std::variant<ConnectRequest, SubscribeRequest, PublishRequest>;
+    using RequestType =
+            std::variant<ConnectRequest, SubscribeRequest, PublishRequest, RefreshRequest>;
 
     RequestType request;
 };
@@ -95,7 +107,8 @@ struct Reply {
     std::uint32_t id;
     std::optional<ErrorReply> error;
 
-    using ResultType = std::variant<ConnectResult, SubscribeResult, PublishResult, Push>;
+    using ResultType =
+            std::variant<ConnectResult, SubscribeResult, PublishResult, RefreshResult, Push>;
 
     std::optional<ResultType> result;
 };
@@ -103,10 +116,12 @@ struct Reply {
 auto to_json(nlohmann::json &j, ConnectRequest const &req) -> void;
 auto to_json(nlohmann::json &j, SubscribeRequest const &req) -> void;
 auto to_json(nlohmann::json &j, PublishRequest const &req) -> void;
+auto to_json(nlohmann::json &j, RefreshRequest const &req) -> void;
 
 auto from_json(nlohmann::json const &j, ConnectResult &result) -> void;
 auto from_json(nlohmann::json const &j, SubscribeResult &result) -> void;
 auto from_json(nlohmann::json const &j, PublishResult &result) -> void;
+auto from_json(nlohmann::json const &j, RefreshResult &result) -> void;
 
 auto from_json(nlohmann::json const &j, ClientInfo &info) -> void;
 auto from_json(nlohmann::json const &j, Publication &pub) -> void;

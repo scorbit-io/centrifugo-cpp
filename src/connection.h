@@ -40,9 +40,9 @@ struct UrlComponents {
 class Connection
 {
 public:
-    using ConnectingSignal = boost::signals2::signal<void()>;
+    using ConnectingSignal = boost::signals2::signal<void(DisconnectReason const &)>;
     using ConnectedSignal = boost::signals2::signal<void(ConnectResult const &)>;
-    using DisconnectedSignal = boost::signals2::signal<void()>;
+    using DisconnectedSignal = boost::signals2::signal<void(DisconnectReason const &)>;
     using ReplyReceivedSignal = boost::signals2::signal<void(Reply const &)>;
     using ErrorSignal = boost::signals2::signal<void(std::string const &)>;
 
@@ -53,7 +53,8 @@ public:
     auto sentCommands() const -> std::unordered_map<std::uint32_t, Command> const &;
 
     auto initialConnect() -> outcome::result<void, std::string>;
-    auto disconnect() -> void;
+    auto disconnect(DisconnectReason const &reason = {DisconnectCode::NoError, "disconnect called"})
+            -> void;
 
     template<typename T>
     auto send(T &&message) -> void
@@ -75,14 +76,16 @@ public:
 
 private:
     auto connect() -> void;
-    auto reconnect() -> void;
+    auto reconnect(DisconnectReason const &reason = {}) -> void;
     auto handShake() -> void;
     auto read() -> void;
     auto handleReceivedMsg(json const &json) -> void;
     auto sendConnectCmd() -> void;
-    auto startPingTimer() -> void;
-    auto calculateBackoffDelay() -> std::chrono::milliseconds;
     auto flush() -> void;
+    auto refreshToken() -> bool;
+    auto startPingTimer() -> void;
+    auto startTokenRefreshTimer(std::uint32_t ttlSeconds) -> void;
+    auto calculateBackoffDelay() -> std::chrono::milliseconds;
 
     template<typename F>
     auto withWs(F &&func) -> decltype(auto)
@@ -97,14 +100,13 @@ private:
             return;
 
         state_ = newState;
-        if constexpr (sizeof...(Args) == 0) {
+        if constexpr ((std::is_same_v<std::decay_t<Args>, DisconnectReason> && ...)) {
             if (state_ == ConnectionState::CONNECTING) {
                 connectingSignal_(std::forward<Args>(args)...);
             } else if (state_ == ConnectionState::DISCONNECTED) {
                 disconnectedSignal_(std::forward<Args>(args)...);
             }
-        } else if constexpr (sizeof...(Args) == 1
-                             && (std::is_same_v<std::decay_t<Args>, ConnectResult> && ...)) {
+        } else if constexpr ((std::is_same_v<std::decay_t<Args>, ConnectResult> && ...)) {
             connectedSignal_(std::forward<Args>(args)...);
         }
     }
@@ -123,6 +125,7 @@ private:
     beast::flat_buffer buffer_;
     net::steady_timer reconnectTimer_;
     net::steady_timer pingTimer_;
+    net::steady_timer tokenRefreshTimer_;
     std::mt19937 rng_;
 
     ConnectionState state_ = ConnectionState::DISCONNECTED;
@@ -132,6 +135,7 @@ private:
     std::uint32_t reconnectAttempts_ = 0;
     std::unordered_map<std::uint32_t, Command> sentCommands_;
     std::string token_;
+    bool isTokenExpired_ = false;
 
     // deferred writes
     std::string pendingWrites_;

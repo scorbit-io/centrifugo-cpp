@@ -1,7 +1,9 @@
 #include "connection.h"
 #include "centrifugo/common.h"
+#include "centrifugo/error.h"
 #include "protocol_all.h"
 
+#include <cstdint>
 #include <iostream>
 #include <string>
 #include <openssl/ssl.h>
@@ -66,9 +68,10 @@ Connection::Connection(net::strand<net::io_context::executor_type> const &strand
     , ws_ {WsStream {strand}}
     , reconnectTimer_ {strand}
     , pingTimer_ {strand}
+    , tokenRefreshTimer_ {strand}
     , rng_ {std::random_device {}()}
 {
-    connectingSignal_.connect([this] { reconnectAttempts_ = 0; });
+    connectingSignal_.connect([this](auto const &) { reconnectAttempts_ = 0; });
 
     connectedSignal_.connect([this](ConnectResult const &result) {
         clientId_ = result.client;
@@ -77,11 +80,23 @@ Connection::Connection(net::strand<net::io_context::executor_type> const &strand
             pingInterval_ = chrono::seconds {result.ping} + config_.maxPingDelay;
             startPingTimer();
         }
+
+        if (result.expires) {
+            startTokenRefreshTimer(result.ttl);
+        }
     });
 
-    disconnectedSignal_.connect([this] {
+    disconnectedSignal_.connect([this](auto const &) {
         reconnectTimer_.cancel();
         pingTimer_.cancel();
+        tokenRefreshTimer_.cancel();
+        withWs([this](auto &ws) {
+            ws.async_close(websocket::close_code::normal, [this](beast::error_code ec) {
+                if (ec) {
+                    errorSignal_("error while closing socket: " + ec.message());
+                }
+            });
+        });
     });
 }
 
@@ -133,21 +148,9 @@ auto Connection::initialConnect() -> outcome::result<void, std::string>
     return outcome::success();
 }
 
-auto Connection::disconnect() -> void
+auto Connection::disconnect(DisconnectReason const &reason) -> void
 {
-    if (state_ == ConnectionState::DISCONNECTED) {
-        return;
-    }
-
-    withWs([this](auto &ws) {
-        ws.async_close(websocket::close_code::normal, [this](beast::error_code ec) {
-            if (ec) {
-                errorSignal_("error while closing socket: " + ec.message());
-            }
-
-            setState(ConnectionState::DISCONNECTED);
-        });
-    });
+    setState(ConnectionState::DISCONNECTED, reason);
 }
 
 auto Connection::send(json const &j, Command &&cmd) -> void
@@ -167,7 +170,20 @@ auto Connection::send(json const &j, Command &&cmd) -> void
 
 auto Connection::connect() -> void
 {
-    setState(ConnectionState::CONNECTING);
+    setState(ConnectionState::CONNECTING,
+             DisconnectReason {DisconnectCode::NoError, "connect called"});
+
+    if (token_.empty()) {
+        token_ = !config_.token.empty() ? config_.token
+               : config_.getToken       ? config_.getToken()
+                                        : "";
+    } else if (isTokenExpired_) {
+        if (!refreshToken()) {
+            return;
+        }
+        isTokenExpired_ = false;
+    }
+
     resolver_.async_resolve(urlComponents_.host, urlComponents_.port,
                             [this](beast::error_code ec, tcp::resolver::results_type results) {
                                 if (ec) {
@@ -192,9 +208,9 @@ auto Connection::connect() -> void
                             });
 }
 
-auto Connection::reconnect() -> void
+auto Connection::reconnect(DisconnectReason const &reason) -> void
 {
-    setState(ConnectionState::CONNECTING);
+    setState(ConnectionState::CONNECTING, reason);
     ++reconnectAttempts_;
     auto const delay = calculateBackoffDelay();
     std::cout << "reconnection attempt " << reconnectAttempts_ << " in " << delay.count() << "ms"
@@ -266,13 +282,27 @@ auto Connection::handShake() -> void
 auto Connection::read() -> void
 {
     withWs([this](auto &ws) {
-        ws.async_read(buffer_, [this](beast::error_code ec, std::size_t) {
+        ws.async_read(buffer_, [this, &ws](beast::error_code ec, std::size_t) {
             if (ec && ec != net::ssl::error::stream_truncated) {
-                if (ec != websocket::error::closed) {
-                    errorSignal_("read error: " + ec.message());
+                if (ec == beast::errc::operation_canceled) {
+                    return;
                 }
-                reconnect();
-                return;
+
+                if (ec != websocket::error::closed) {
+                    errorSignal_(std::string {"read error: "} + ec.category().name() + ' '
+                                 + ec.message());
+                    reconnect(
+                            DisconnectReason {DisconnectCode::ConnectionError, "connection error"});
+                    return;
+                }
+
+                auto reason = DisconnectReason {static_cast<DisconnectCode>(ws.reason().code),
+                                                std::string {ws.reason().reason}};
+                if (reason.code == DisconnectCode::BadRequest) {
+                    disconnect(reason);
+                    return;
+                }
+                reconnect(reason);
             }
 
             auto data = beast::buffers_to_string(buffer_.data());
@@ -312,6 +342,11 @@ auto Connection::handleReceivedMsg(json const &json) -> void
 
     auto const reply = json.get<Reply>();
 
+    if (reply.error && static_cast<ErrorType>(reply.error->code) == ErrorType::TokenExpired) {
+        isTokenExpired_ = true;
+        reconnect();
+    }
+
     if (reply.result) {
         std::visit(
                 [this](auto const &result) {
@@ -319,6 +354,10 @@ auto Connection::handleReceivedMsg(json const &json) -> void
 
                     if constexpr (std::is_same_v<ResultType, ConnectResult>) {
                         setState(ConnectionState::CONNECTED, result);
+                    } else if constexpr (std::is_same_v<ResultType, RefreshResult>) {
+                        if (result.expires) {
+                            startTokenRefreshTimer(result.ttl);
+                        }
                     }
                 },
                 *reply.result);
@@ -332,48 +371,10 @@ auto Connection::handleReceivedMsg(json const &json) -> void
 auto Connection::sendConnectCmd() -> void
 {
     auto req = ConnectRequest {};
-
-    token_ = !config_.token.empty() ? config_.token : config_.getToken ? config_.getToken() : "";
     req.token = token_;
     req.name = config_.name.empty() ? "cpp" : config_.name;
-    req.version = config_.version.empty() ? "1.0.0" : config_.version;
-
-    // send(makeCommand(req));
+    req.version = config_.version;
     send(makeCommand(req));
-}
-
-auto Connection::startPingTimer() -> void
-{
-    pingTimer_.expires_after(pingInterval_);
-    pingTimer_.async_wait([this](boost::system::error_code ec) {
-        if (ec) {
-            if (ec == net::error::operation_aborted) {
-                return;
-            }
-            errorSignal_("ping timer error: " + ec.message());
-            return;
-        }
-
-        reconnect();
-    });
-}
-
-auto Connection::calculateBackoffDelay() -> std::chrono::milliseconds
-{
-    using namespace std;
-    using namespace chrono;
-
-    auto constexpr BIT_SHIFT_BASE = 1u;
-    auto constexpr MAX_EXPONENTIAL_SHIFT = static_cast<decltype(reconnectAttempts_)>(
-            numeric_limits<decltype(BIT_SHIFT_BASE)>::digits / 2);
-
-    auto const exponentialDelay =
-            config_.minReconnectDelay
-            * (BIT_SHIFT_BASE << min(reconnectAttempts_, MAX_EXPONENTIAL_SHIFT));
-    auto const cappedDelay = min(exponentialDelay, config_.maxReconnectDelay);
-
-    return milliseconds {
-            uniform_int_distribution<milliseconds::rep> {0, cappedDelay.count()}(rng_)};
 }
 
 auto Connection::flush() -> void
@@ -409,6 +410,72 @@ auto Connection::flush() -> void
             }
         });
     });
+}
+
+auto Connection::refreshToken() -> bool
+{
+    if (!config_.getToken) {
+        errorSignal_("getToken must be set to handle token refresh");
+        setState(ConnectionState::DISCONNECTED,
+                 DisconnectReason {DisconnectCode::Unauthorized, "unauthorized"});
+        return false;
+    }
+    token_ = config_.getToken();
+    return true;
+}
+
+auto Connection::startPingTimer() -> void
+{
+    pingTimer_.expires_after(pingInterval_);
+    pingTimer_.async_wait([this](boost::system::error_code ec) {
+        if (ec) {
+            if (ec == net::error::operation_aborted) {
+                return;
+            }
+            errorSignal_("ping timer error: " + ec.message());
+            return;
+        }
+
+        reconnect(DisconnectReason {DisconnectCode::NoPing, "no ping"});
+    });
+}
+
+auto Connection::startTokenRefreshTimer(std::uint32_t ttlSeconds) -> void
+{
+    tokenRefreshTimer_.expires_after(chrono::seconds {ttlSeconds});
+    tokenRefreshTimer_.async_wait([this](boost::system::error_code ec) {
+        if (ec) {
+            if (ec == net::error::operation_aborted) {
+                return;
+            }
+            errorSignal_("token refresh timer error: " + ec.message());
+            return;
+        }
+
+        if (!refreshToken()) {
+            return;
+        }
+
+        send(makeCommand(RefreshRequest {token_}));
+    });
+}
+
+auto Connection::calculateBackoffDelay() -> std::chrono::milliseconds
+{
+    using namespace std;
+    using namespace chrono;
+
+    auto constexpr BIT_SHIFT_BASE = 1u;
+    auto constexpr MAX_EXPONENTIAL_SHIFT = static_cast<decltype(reconnectAttempts_)>(
+            numeric_limits<decltype(BIT_SHIFT_BASE)>::digits / 2);
+
+    auto const exponentialDelay =
+            config_.minReconnectDelay
+            * (BIT_SHIFT_BASE << min(reconnectAttempts_, MAX_EXPONENTIAL_SHIFT));
+    auto const cappedDelay = min(exponentialDelay, config_.maxReconnectDelay);
+
+    return milliseconds {
+            uniform_int_distribution<milliseconds::rep> {0, cappedDelay.count()}(rng_)};
 }
 
 }
