@@ -4,7 +4,6 @@
 #include "protocol_all.h"
 
 #include <cstdint>
-#include <iostream>
 #include <string>
 #include <openssl/ssl.h>
 #include <openssl/err.h>
@@ -416,7 +415,16 @@ auto Transport::refreshToken() -> bool
                  DisconnectReason {DisconnectCode::Unauthorized, "unauthorized"});
         return false;
     }
-    token_ = config_.getToken();
+
+    auto const tokenResult = config_.getToken();
+    if (!tokenResult) {
+        errorSignal_("getToken failed: " + tokenResult.error().message());
+        setState(ConnectionState::DISCONNECTED,
+                 DisconnectReason {DisconnectCode::Unauthorized, "unauthorized"});
+        return false;
+    }
+
+    token_ = tokenResult.value();
     return true;
 }
 
@@ -424,7 +432,7 @@ auto Transport::closeConnection() -> void
 {
     withWs([this](auto &ws) {
         ws.async_close(websocket::close_code::normal, [this](beast::error_code ec) {
-            if (ec) {
+            if (ec && ec != std::errc::operation_canceled) {
                 errorSignal_("error while closing socket: " + ec.message());
             }
         });

@@ -1,4 +1,3 @@
-#include "centrifugo/common.h"
 #include <cstdint>
 #include <functional>
 #include <iostream>
@@ -9,8 +8,11 @@
 #include <boost/beast/version.hpp>
 
 #include <centrifugo.h>
+#include <centrifugo/common.h>
 
-auto getJwtToken() -> std::string
+namespace outcome = boost::outcome_v2;
+
+auto getJwtToken() -> outcome::result<std::string>
 {
     namespace beast = boost::beast;
     namespace http = beast::http;
@@ -41,8 +43,7 @@ auto getJwtToken() -> std::string
 
         // Check response status
         if (res.result() != http::status::ok) {
-            std::cerr << "HTTP error: " << res.result_int() << std::endl;
-            return "";
+            return std::make_error_code(std::errc::connection_refused);
         }
 
         // Extract token from response body
@@ -54,8 +55,7 @@ auto getJwtToken() -> std::string
 
         return token;
     } catch (std::exception const &e) {
-        std::cerr << "Error getting JWT token: " << e.what() << std::endl;
-        return "";
+        return std::make_error_code(std::errc::network_unreachable);
     }
 }
 
