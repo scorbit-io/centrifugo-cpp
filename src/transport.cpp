@@ -203,8 +203,12 @@ auto Transport::reconnect(DisconnectReason const &reason) -> void
     setState(ConnectionState::CONNECTING, reason);
     ++reconnectAttempts_;
     auto const delay = calculateBackoffDelay();
-    std::cout << "reconnection attempt " << reconnectAttempts_ << " in " << delay.count() << "ms"
-              << std::endl;
+
+    if (config_.logHandler) {
+        config_.logHandler({LogLevel::Debug,
+                            "reconnection attempt",
+                            {{"attempt", reconnectAttempts_}, {"delay", delay.count()}}});
+    }
 
     reconnectTimer_.expires_after(delay);
     reconnectTimer_.async_wait([this](beast::error_code ec) {
@@ -298,8 +302,10 @@ auto Transport::read() -> void
 
             auto data = beast::buffers_to_string(buffer_.data());
             buffer_.consume(buffer_.size());
-            std::cout << "\033[34m┌── received:\033[0m\n"
-                      << data << "\n\033[34m└──\033[0m" << std::endl;
+
+            if (config_.logHandler) {
+                config_.logHandler({LogLevel::Debug, "received message", {{"message", data}}});
+            }
 
             auto ss = std::stringstream {data};
             auto line = std::string {};
@@ -376,7 +382,9 @@ auto Transport::flush() -> void
     pendingWrites_.clear();
     pendingCommands_.clear();
 
-    std::cout << "\033[31m┌── sending:\033[0m\n" << messages << "\n\033[31m└──\033[0m" << std::endl;
+    if (config_.logHandler) {
+        config_.logHandler({LogLevel::Debug, "sending message", {{"message", messages}}});
+    }
 
     isWriting_ = true;
     withWs([&](auto &ws) {

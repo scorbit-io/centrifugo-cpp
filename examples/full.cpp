@@ -59,6 +59,21 @@ auto getJwtToken() -> std::string
     }
 }
 
+auto logger(centrifugo::LogEntry log) -> void
+{
+    if (log.message.find("received") != std::string::npos) {
+        std::cout << "\033[34m┌── " << log.message << ":\033[0m\n"
+                  << log.fields["message"].get<std::string>() << "\n\033[34m└──\033[0m"
+                  << std::endl;
+    } else if (log.message.find("sending") != std::string::npos) {
+        std::cout << "\033[31m┌── " << log.message << ":\033[0m\n"
+                  << log.fields["message"].get<std::string>() << "\n\033[31m└──\033[0m"
+                  << std::endl;
+    } else {
+        std::cout << "DEBUG  " << log.message << ": " << log.fields << std::endl;
+    }
+}
+
 int main()
 {
     auto ioc = boost::asio::io_context {};
@@ -66,6 +81,7 @@ int main()
 
     auto config = centrifugo::ClientConfig {};
     config.getToken = getJwtToken;
+    config.logHandler = logger;
     auto client = centrifugo::Client {strand, "ws://localhost:8000/connection/websocket", config};
 
     client.onConnecting([](centrifugo::DisconnectReason const &reason) {

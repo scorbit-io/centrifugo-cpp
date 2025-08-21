@@ -4,7 +4,17 @@
 #include <string>
 #include <functional>
 
+#include <nlohmann/json.hpp>
+
 namespace centrifugo {
+
+enum class LogLevel { Debug };
+
+struct LogEntry {
+    LogLevel level;
+    std::string message;
+    nlohmann::json fields;
+};
 
 struct ClientConfig {
     std::string token;
@@ -15,6 +25,8 @@ struct ClientConfig {
     std::chrono::seconds maxPingDelay {10};
     std::chrono::milliseconds minReconnectDelay {200};
     std::chrono::milliseconds maxReconnectDelay {20000};
+
+    std::function<void(LogEntry)> logHandler;
 };
 
 enum class ConnectionState { DISCONNECTED, CONNECTING, CONNECTED };
