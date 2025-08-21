@@ -184,28 +184,30 @@ auto Connection::connect() -> void
         isTokenExpired_ = false;
     }
 
-    resolver_.async_resolve(urlComponents_.host, urlComponents_.port,
-                            [this](beast::error_code ec, tcp::resolver::results_type results) {
-                                if (ec) {
-                                    errorSignal_("resolve error: " + ec.message());
-                                    reconnect();
-                                    return;
-                                }
+    resolver_.async_resolve(
+            urlComponents_.host, urlComponents_.port,
+            [this](beast::error_code ec, tcp::resolver::results_type results) {
+                if (ec) {
+                    errorSignal_("resolve error: " + ec.message());
+                    reconnect();
+                    return;
+                }
 
-                                withWs([this, results](auto &ws) {
-                                    net::async_connect(
-                                            beast::get_lowest_layer(ws), results,
-                                            [this](beast::error_code ec,
-                                                   tcp::resolver::results_type::endpoint_type) {
-                                                if (ec) {
-                                                    errorSignal_("connect error: " + ec.message());
-                                                    reconnect();
-                                                    return;
-                                                }
-                                                handShake();
-                                            });
-                                });
-                            });
+                withWs([this, results](auto &ws) {
+                    net::async_connect(beast::get_lowest_layer(ws), results,
+                                       [this](beast::error_code ec,
+                                              tcp::resolver::results_type::endpoint_type) {
+                                           if (ec) {
+                                               if (ec != net::error::connection_refused) {
+                                                   errorSignal_("connect error: " + ec.message());
+                                               }
+                                               reconnect();
+                                               return;
+                                           }
+                                           handShake();
+                                       });
+                });
+            });
 }
 
 auto Connection::reconnect(DisconnectReason const &reason) -> void
@@ -303,6 +305,7 @@ auto Connection::read() -> void
                     return;
                 }
                 reconnect(reason);
+                return;
             }
 
             auto data = beast::buffers_to_string(buffer_.data());

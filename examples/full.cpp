@@ -117,12 +117,12 @@ int main()
     auto &sub = subCreateRes.value().get();
 
     sub.onSubscribing([ch = sub.channel()] {
-        std::cout << "Subscribing to channel '" << ch << "'..." << std::endl;
+        std::cout << "[CLIENT-SUB:" << ch << "] Subscribing..." << std::endl;
     });
 
     sub.onSubscribed([subRef = subCreateRes.value()] {
         auto &sub = subRef.get();
-        std::cout << "Subscribed to channel '" << sub.channel() << "'!" << std::endl;
+        std::cout << "[CLIENT-SUB:" << sub.channel() << "] Subscribed successfully!" << std::endl;
 
         auto pubRes = sub.publish({{"message", "I am freeeeeee!!"}});
         if (!pubRes) {
@@ -131,11 +131,17 @@ int main()
     });
 
     sub.onUnsubscribed([ch = sub.channel()] {
-        std::cout << "Unsubscribed from channel '" << ch << "'" << std::endl;
+        std::cout << "[CLIENT-SUB:" << ch << "] Unsubscribed" << std::endl;
     });
 
     sub.onPublication([ch = sub.channel()](centrifugo::Publication const &pub) {
-        std::cout << "Publication from channel '" << ch << "':\n" << pub.data << std::endl;
+        std::cout << "[CLIENT-SUB:" << ch << "] Publication received:" << std::endl;
+        std::cout << "  Data: " << pub.data << std::endl;
+        std::cout << "  Offset: " << pub.offset << std::endl;
+        if (pub.info) {
+            std::cout << "  From user: " << pub.info->user << " (client: " << pub.info->client
+                      << ")" << std::endl;
+        }
     });
 
     sub.onError([ch = sub.channel()](centrifugo::Error const &err) {
