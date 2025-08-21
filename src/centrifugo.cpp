@@ -2,9 +2,9 @@
 
 #include <functional>
 #include <optional>
+#include <regex>
 #include <unordered_set>
 #include <iterator>
-#include <iostream>
 
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/steady_timer.hpp>
@@ -12,6 +12,7 @@
 #include <boost/beast/websocket.hpp>
 #include <nlohmann/json.hpp>
 
+#include "centrifugo/error.h"
 #include "centrifugo/subscription.h"
 #include "protocol_all.h"
 #include "transport.h"
@@ -92,8 +93,10 @@ public:
             }
         });
 
-        transport_.onError().connect([](std::string const &error) {
-            std::cout << "transport error: " << error << std::endl;
+        transport_.onError().connect([this](std::string const &error) {
+            if (onError_) {
+                onError_(Error {ErrorType::TransportError, error});
+            }
         });
     }
 

@@ -11,6 +11,7 @@ struct Error {
 
 enum class ErrorType {
     NotSubscribed = 1,
+    TransportError = 2,
 
     PermissionDenied = 103,
     AlreadySubscribed = 105,
