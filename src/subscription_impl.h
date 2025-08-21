@@ -5,7 +5,7 @@
 #include <boost/signals2/signal.hpp>
 
 #include <centrifugo/subscription.h>
-#include "connection.h"
+#include "transport.h"
 
 namespace centrifugo {
 
@@ -18,7 +18,7 @@ public:
     using PublicationSignal = boost::signals2::signal<void(Publication const &)>;
     using ErrorSignal = boost::signals2::signal<void(Error)>;
 
-    SubscriptionImpl(std::string const &channel, Connection &connection);
+    SubscriptionImpl(std::string const &channel, Transport &transport);
     ~SubscriptionImpl();
 
     SubscriptionImpl(SubscriptionImpl const &) = delete;
@@ -54,7 +54,7 @@ private:
 
 private:
     std::string channel_;
-    Connection &connection_;
+    Transport &transport_;
 
     Subscription subscription_;
     SubscriptionState state_ = SubscriptionState::UNSUBSCRIBED;

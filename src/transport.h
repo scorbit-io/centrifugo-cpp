@@ -37,7 +37,7 @@ struct UrlComponents {
     bool secure = false;
 };
 
-class Connection
+class Transport
 {
 public:
     using ConnectingSignal = boost::signals2::signal<void(DisconnectReason const &)>;
@@ -46,8 +46,8 @@ public:
     using ReplyReceivedSignal = boost::signals2::signal<void(Reply const &)>;
     using ErrorSignal = boost::signals2::signal<void(std::string const &)>;
 
-    Connection(net::strand<net::io_context::executor_type> const &strand, std::string &&url,
-               ClientConfig &&config);
+    Transport(net::strand<net::io_context::executor_type> const &strand, std::string &&url,
+              ClientConfig &&config);
 
     auto state() const -> ConnectionState;
     auto sentCommands() const -> std::unordered_map<std::uint32_t, Command> const &;

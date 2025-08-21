@@ -6,9 +6,9 @@
 
 namespace centrifugo {
 
-SubscriptionImpl::SubscriptionImpl(std::string const &channel, Connection &connection)
+SubscriptionImpl::SubscriptionImpl(std::string const &channel, Transport &transport)
     : channel_ {channel}
-    , connection_ {connection}
+    , transport_ {transport}
     , subscription_ {this}
 {
     init();
@@ -21,7 +21,7 @@ SubscriptionImpl::~SubscriptionImpl()
 
 SubscriptionImpl::SubscriptionImpl(SubscriptionImpl &&other) noexcept
     : channel_ {std::move(other.channel_)}
-    , connection_ {other.connection_}
+    , transport_ {other.transport_}
     , subscription_ {this}
     , state_ {other.state_}
     , subscribingSignal_ {std::move(other.subscribingSignal_)}
@@ -57,7 +57,7 @@ auto SubscriptionImpl::subscribe() -> outcome::result<void, std::string>
     state_ = SubscriptionState::SUBSCRIBING;
     subscribingSignal_();
 
-    if (connection_.state() == ConnectionState::CONNECTED) {
+    if (transport_.state() == ConnectionState::CONNECTED) {
         sendSubscribeCmd();
     }
     return outcome::success();
@@ -115,13 +115,13 @@ auto SubscriptionImpl::onError() -> ErrorSignal &
 
 auto SubscriptionImpl::init() -> void
 {
-    onConnectingConnection_ = connection_.onConnecting().connect([this](auto const &) {
+    onConnectingConnection_ = transport_.onConnecting().connect([this](auto const &) {
         if (state_ == SubscriptionState::SUBSCRIBED) {
             setState(SubscriptionState::SUBSCRIBING);
         }
     });
 
-    onConnectedConnection_ = connection_.onConnected().connect([this](auto const &) {
+    onConnectedConnection_ = transport_.onConnected().connect([this](auto const &) {
         if (state_ == SubscriptionState::SUBSCRIBING) {
             sendSubscribeCmd();
         }
@@ -137,7 +137,7 @@ auto SubscriptionImpl::deinit() -> void
 auto SubscriptionImpl::sendCmd(Command &&cmd) -> void
 {
     waitingReplies_.emplace(cmd.id);
-    connection_.send(std::move(cmd));
+    transport_.send(std::move(cmd));
 }
 
 auto SubscriptionImpl::sendSubscribeCmd() -> void

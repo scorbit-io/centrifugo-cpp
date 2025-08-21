@@ -1,4 +1,4 @@
-#include "connection.h"
+#include "transport.h"
 #include "centrifugo/common.h"
 #include "centrifugo/error.h"
 #include "protocol_all.h"
@@ -60,8 +60,8 @@ auto parseUrl(std::string const &url) -> outcome::result<UrlComponents, std::str
     return UrlComponents {host, port, path, secure};
 }
 
-Connection::Connection(net::strand<net::io_context::executor_type> const &strand, std::string &&url,
-                       ClientConfig &&config)
+Transport::Transport(net::strand<net::io_context::executor_type> const &strand, std::string &&url,
+                     ClientConfig &&config)
     : config_ {std::move(config)}
     , url_ {std::move(url)}
     , resolver_ {strand}
@@ -95,17 +95,17 @@ Connection::Connection(net::strand<net::io_context::executor_type> const &strand
     });
 }
 
-auto Connection::state() const -> ConnectionState
+auto Transport::state() const -> ConnectionState
 {
     return state_;
 }
 
-auto Connection::sentCommands() const -> std::unordered_map<std::uint32_t, Command> const &
+auto Transport::sentCommands() const -> std::unordered_map<std::uint32_t, Command> const &
 {
     return sentCommands_;
 }
 
-auto Connection::initialConnect() -> outcome::result<void, std::string>
+auto Transport::initialConnect() -> outcome::result<void, std::string>
 {
     if (state_ != ConnectionState::DISCONNECTED) {
         return std::string {"already connected or connecting"};
@@ -143,12 +143,12 @@ auto Connection::initialConnect() -> outcome::result<void, std::string>
     return outcome::success();
 }
 
-auto Connection::disconnect(DisconnectReason const &reason) -> void
+auto Transport::disconnect(DisconnectReason const &reason) -> void
 {
     setState(ConnectionState::DISCONNECTED, reason);
 }
 
-auto Connection::send(json const &j, Command &&cmd) -> void
+auto Transport::send(json const &j, Command &&cmd) -> void
 {
     if (pendingWrites_.empty()) {
         pendingWrites_ += j.dump();
@@ -163,7 +163,7 @@ auto Connection::send(json const &j, Command &&cmd) -> void
     withWs([this](auto &ws) { net::post(ws.get_executor(), [this] { flush(); }); });
 }
 
-auto Connection::connect() -> void
+auto Transport::connect() -> void
 {
     setState(ConnectionState::CONNECTING,
              DisconnectReason {DisconnectCode::NoError, "connect called"});
@@ -198,7 +198,7 @@ auto Connection::connect() -> void
             });
 }
 
-auto Connection::reconnect(DisconnectReason const &reason) -> void
+auto Transport::reconnect(DisconnectReason const &reason) -> void
 {
     setState(ConnectionState::CONNECTING, reason);
     ++reconnectAttempts_;
@@ -217,7 +217,7 @@ auto Connection::reconnect(DisconnectReason const &reason) -> void
     });
 }
 
-auto Connection::handShake() -> void
+auto Transport::handShake() -> void
 {
     withWs([this](auto &ws) {
         using StreamType = std::decay_t<decltype(ws)>;
@@ -269,7 +269,7 @@ auto Connection::handShake() -> void
     });
 }
 
-auto Connection::read() -> void
+auto Transport::read() -> void
 {
     withWs([this](auto &ws) {
         ws.async_read(buffer_, [this, &ws](beast::error_code ec, std::size_t) {
@@ -320,7 +320,7 @@ auto Connection::read() -> void
     });
 }
 
-auto Connection::handleReceivedMsg(json const &json) -> void
+auto Transport::handleReceivedMsg(json const &json) -> void
 {
     if (json.empty()) {
         if (pingTimer_.cancel() == 0) // do not pong if not pinging
@@ -356,7 +356,7 @@ auto Connection::handleReceivedMsg(json const &json) -> void
     sentCommands_.erase(reply.id);
 }
 
-auto Connection::sendConnectCmd() -> void
+auto Transport::sendConnectCmd() -> void
 {
     auto req = ConnectRequest {};
     req.token = token_;
@@ -365,7 +365,7 @@ auto Connection::sendConnectCmd() -> void
     send(makeCommand(req));
 }
 
-auto Connection::flush() -> void
+auto Transport::flush() -> void
 {
     if (isWriting_ || pendingWrites_.empty()) {
         return;
@@ -400,7 +400,7 @@ auto Connection::flush() -> void
     });
 }
 
-auto Connection::refreshToken() -> bool
+auto Transport::refreshToken() -> bool
 {
     if (!config_.getToken) {
         errorSignal_("getToken must be set to handle token refresh");
@@ -412,7 +412,7 @@ auto Connection::refreshToken() -> bool
     return true;
 }
 
-auto Connection::closeConnection() -> void
+auto Transport::closeConnection() -> void
 {
     withWs([this](auto &ws) {
         ws.async_close(websocket::close_code::normal, [this](beast::error_code ec) {
@@ -423,7 +423,7 @@ auto Connection::closeConnection() -> void
     });
 }
 
-auto Connection::startPingTimer() -> void
+auto Transport::startPingTimer() -> void
 {
     pingTimer_.expires_after(pingInterval_);
     pingTimer_.async_wait([this](boost::system::error_code ec) {
@@ -439,7 +439,7 @@ auto Connection::startPingTimer() -> void
     });
 }
 
-auto Connection::startTokenRefreshTimer(std::uint32_t ttlSeconds) -> void
+auto Transport::startTokenRefreshTimer(std::uint32_t ttlSeconds) -> void
 {
     tokenRefreshTimer_.expires_after(chrono::seconds {ttlSeconds});
     tokenRefreshTimer_.async_wait([this](boost::system::error_code ec) {
@@ -459,7 +459,7 @@ auto Connection::startTokenRefreshTimer(std::uint32_t ttlSeconds) -> void
     });
 }
 
-auto Connection::calculateBackoffDelay() -> std::chrono::milliseconds
+auto Transport::calculateBackoffDelay() -> std::chrono::milliseconds
 {
     using namespace std;
     using namespace chrono;

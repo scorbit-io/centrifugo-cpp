@@ -14,7 +14,7 @@
 
 #include "centrifugo/subscription.h"
 #include "protocol_all.h"
-#include "connection.h"
+#include "transport.h"
 #include "subscription_impl.h"
 
 namespace centrifugo {
@@ -24,9 +24,9 @@ class Client::Impl
 public:
     Impl(net::strand<net::io_context::executor_type> strand, std::string &&url,
          ClientConfig &&config)
-        : connection_ {strand, std::move(url), std::move(config)}
+        : transport_ {strand, std::move(url), std::move(config)}
     {
-        connection_.onReplyReceived().connect([this](Reply const &reply) {
+        transport_.onReplyReceived().connect([this](Reply const &reply) {
             for (auto &[channel, subscription] : subscriptions_) {
                 if (subscription.handleReply(reply)) {
                     return;
@@ -49,7 +49,7 @@ public:
                     reply.result);
         });
 
-        connection_.onConnecting().connect([this](auto const &) {
+        transport_.onConnecting().connect([this](auto const &) {
             if (onSubscribing_) {
                 for (auto const &chan : serverSubscriptions_) {
                     onSubscribing_(chan);
@@ -57,7 +57,7 @@ public:
             }
         });
 
-        connection_.onConnected().connect([this](ConnectResult const &result) {
+        transport_.onConnected().connect([this](ConnectResult const &result) {
             auto it = serverSubscriptions_.begin();
             while (it != serverSubscriptions_.end()) {
                 if (result.subs.count(*it) == 0) {
@@ -84,7 +84,7 @@ public:
             }
         });
 
-        connection_.onDisconnected().connect([this](auto const &) {
+        transport_.onDisconnected().connect([this](auto const &) {
             if (onUnsubscribed_) {
                 for (auto const &chan : serverSubscriptions_) {
                     onUnsubscribed_(chan);
@@ -92,12 +92,12 @@ public:
             }
         });
 
-        connection_.onError().connect([](std::string const &error) {
+        transport_.onError().connect([](std::string const &error) {
             std::cout << "transport error: " << error << std::endl;
         });
     }
 
-    auto connection() -> Connection & { return connection_; }
+    auto transport() -> Transport & { return transport_; }
 
     auto newSubscription(std::string const &channel)
             -> outcome::result<std::reference_wrapper<Subscription>, std::string>
@@ -109,7 +109,7 @@ public:
             return std::string {"channel " + channel
                                 + " already exists as server-side subscription"};
         }
-        auto &sub = subscriptions_.emplace(channel, SubscriptionImpl {channel, connection_})
+        auto &sub = subscriptions_.emplace(channel, SubscriptionImpl {channel, transport_})
                             .first->second.subscription();
         return sub;
     }
@@ -166,12 +166,12 @@ public:
     auto publish(std::string const &channel, nlohmann::json const &data)
             -> outcome::result<void, Error>
     {
-        if (connection_.state() != ConnectionState::CONNECTED
+        if (transport_.state() != ConnectionState::CONNECTED
             || serverSubscriptions_.count(channel) == 0) {
             return Error {ErrorType::NotSubscribed, "not subscribed"};
         }
 
-        connection_.send(makeCommand(PublishRequest {channel, data}));
+        transport_.send(makeCommand(PublishRequest {channel, data}));
         return outcome::success();
     }
 
@@ -206,11 +206,11 @@ private:
     {
         auto req = SubscribeRequest {};
         req.channel = channel;
-        connection_.send(makeCommand(std::move(req)));
+        transport_.send(makeCommand(std::move(req)));
     }
 
 private:
-    Connection connection_;
+    Transport transport_;
     std::unordered_map<std::string, SubscriptionImpl> subscriptions_;
     std::unordered_set<std::string> serverSubscriptions_;
 
@@ -231,33 +231,33 @@ Client::~Client() = default;
 
 auto Client::connect() -> outcome::result<void, std::string>
 {
-    return pImpl->connection().initialConnect();
+    return pImpl->transport().initialConnect();
 }
 
 auto Client::disconnect() -> void
 {
-    pImpl->connection().disconnect();
+    pImpl->transport().disconnect();
 }
 
 auto Client::state() const -> ConnectionState
 {
-    return pImpl->connection().state();
+    return pImpl->transport().state();
 }
 
 auto Client::onConnecting(std::function<void(DisconnectReason const &)> callback) -> void
 {
-    pImpl->connection().onConnecting().connect(callback);
+    pImpl->transport().onConnecting().connect(callback);
 }
 
 auto Client::onConnected(std::function<void()> callback) -> void
 {
-    pImpl->connection().onConnected().connect(
+    pImpl->transport().onConnected().connect(
             [callback = std::move(callback)](auto const &) { callback(); });
 }
 
 auto Client::onDisconnected(std::function<void(DisconnectReason const &)> callback) -> void
 {
-    pImpl->connection().onDisconnected().connect(callback);
+    pImpl->transport().onDisconnected().connect(callback);
 }
 
 auto Client::newSubscription(std::string const &channel)
