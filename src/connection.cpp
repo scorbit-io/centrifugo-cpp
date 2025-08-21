@@ -165,7 +165,7 @@ auto Connection::send(json const &j, Command &&cmd) -> void
         pendingCommands_.push_back(std::move(cmd));
     }
 
-    net::defer([this] { flush(); });
+    withWs([this](auto &ws) { net::post(ws.get_executor(), [this] { flush(); }); });
 }
 
 auto Connection::connect() -> void
