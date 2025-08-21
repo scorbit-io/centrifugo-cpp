@@ -39,9 +39,7 @@ public:
                     [this](auto const &result) {
                         using ResultType = std::decay_t<decltype(result)>;
 
-                        if constexpr (std::is_same_v<ResultType, ConnectResult>) {
-                            handleConnectResult(result);
-                        } else if constexpr (std::is_same_v<ResultType, Push>) {
+                        if constexpr (std::is_same_v<ResultType, Push>) {
                             handlePush(result);
                         }
                     },
@@ -52,6 +50,33 @@ public:
             if (onSubscribing_) {
                 for (auto const &chan : serverSubscriptions_) {
                     onSubscribing_(chan);
+                }
+            }
+        });
+
+        connection_.onConnected().connect([this](ConnectResult const &result) {
+            auto it = serverSubscriptions_.begin();
+            while (it != serverSubscriptions_.end()) {
+                if (result.subs.count(*it) == 0) {
+                    if (onUnsubscribed_) {
+                        onUnsubscribed_(*it);
+                    }
+                    it = serverSubscriptions_.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+
+            for (auto const &[channel, subResult] : result.subs) {
+                if (serverSubscriptions_.count(channel) == 0) {
+                    serverSubscriptions_.emplace(channel);
+                    if (onSubscribing_) {
+                        onSubscribing_(channel);
+                    }
+                }
+
+                if (onSubscribed_) {
+                    onSubscribed_(channel);
                 }
             }
         });
@@ -143,20 +168,6 @@ public:
     }
 
 private:
-    auto handleConnectResult(ConnectResult const &result) -> void
-    {
-        for (auto const &[channel, subResult] : result.subs) {
-            serverSubscriptions_.emplace(channel);
-
-            if (onSubscribing_) {
-                onSubscribing_(channel);
-            }
-            if (onSubscribed_) {
-                onSubscribed_(channel);
-            }
-        }
-    }
-
     auto handlePush(Push const &push) -> void
     {
         std::visit(
