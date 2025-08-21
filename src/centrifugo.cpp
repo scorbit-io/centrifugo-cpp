@@ -33,23 +33,20 @@ public:
                 }
             }
 
-            if (reply.error) {
-                // TODO: report error to user
-                return;
-            }
-            if (!reply.result) {
-                return;
-            }
-
             std::visit(
                     [this](auto const &result) {
                         using ResultType = std::decay_t<decltype(result)>;
 
-                        if constexpr (std::is_same_v<ResultType, Push>) {
+                        if constexpr (std::is_same_v<ResultType, ErrorReply>) {
+                            if (onError_) {
+                                onError_(Error {static_cast<ErrorType>(result.code),
+                                                result.message});
+                            }
+                        } else if constexpr (std::is_same_v<ResultType, Push>) {
                             handlePush(result);
                         }
                     },
-                    *reply.result);
+                    reply.result);
         });
 
         connection_.onConnecting().connect([this](auto const &) {
@@ -161,6 +158,11 @@ public:
         onPublication_ = std::move(callback);
     }
 
+    auto onError(std::function<void(Error const &)> callback) -> void
+    {
+        onError_ = std::move(callback);
+    }
+
     auto publish(std::string const &channel, nlohmann::json const &data)
             -> outcome::result<void, Error>
     {
@@ -216,6 +218,7 @@ private:
     std::function<void(std::string const &)> onSubscribed_;
     std::function<void(std::string const &)> onUnsubscribed_;
     std::function<void(std::string const &, Publication const &)> onPublication_;
+    std::function<void(Error const &)> onError_;
 };
 
 Client::Client(net::strand<net::io_context::executor_type> const &strand, std::string url,
@@ -297,6 +300,11 @@ auto Client::onPublication(
         std::function<void(std::string const &channel, Publication const &)> callback) -> void
 {
     pImpl->onPublication(std::move(callback));
+}
+
+auto Client::onError(std::function<void(Error const &)> callback) -> void
+{
+    pImpl->onError(std::move(callback));
 }
 
 auto Client::publish(std::string const &channel, nlohmann::json const &data)

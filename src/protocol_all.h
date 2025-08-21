@@ -95,22 +95,19 @@ struct ErrorReply {
 };
 
 struct Command {
-    std::uint32_t id;
-
     using RequestType =
             std::variant<ConnectRequest, SubscribeRequest, PublishRequest, RefreshRequest>;
 
+    std::uint32_t id;
     RequestType request;
 };
 
 struct Reply {
+    using ResultType = std::variant<ConnectResult, SubscribeResult, PublishResult, RefreshResult,
+                                    Push, ErrorReply>;
+
     std::uint32_t id;
-    std::optional<ErrorReply> error;
-
-    using ResultType =
-            std::variant<ConnectResult, SubscribeResult, PublishResult, RefreshResult, Push>;
-
-    std::optional<ResultType> result;
+    ResultType result;
 };
 
 auto to_json(nlohmann::json &j, ConnectRequest const &req) -> void;

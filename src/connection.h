@@ -83,6 +83,7 @@ private:
     auto sendConnectCmd() -> void;
     auto flush() -> void;
     auto refreshToken() -> bool;
+    auto closeConnection() -> void;
     auto startPingTimer() -> void;
     auto startTokenRefreshTimer(std::uint32_t ttlSeconds) -> void;
     auto calculateBackoffDelay() -> std::chrono::milliseconds;
@@ -135,7 +136,6 @@ private:
     std::uint32_t reconnectAttempts_ = 0;
     std::unordered_map<std::uint32_t, Command> sentCommands_;
     std::string token_;
-    bool isTokenExpired_ = false;
 
     // deferred writes
     std::string pendingWrites_;

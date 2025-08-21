@@ -152,10 +152,10 @@ auto from_json(json const &j, Reply &reply) -> void
 {
     if (j.contains("id"))
         j.at("id").get_to(reply.id);
-    if (j.contains("error"))
-        reply.error = j.at("error").get<ErrorReply>();
 
-    if (j.contains("connect")) {
+    if (j.contains("error")) {
+        reply.result = j.at("error").get<ErrorReply>();
+    } else if (j.contains("connect")) {
         reply.result = j.at("connect").get<ConnectResult>();
     } else if (j.contains("subscribe")) {
         reply.result = j.at("subscribe").get<SubscribeResult>();

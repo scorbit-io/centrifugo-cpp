@@ -70,6 +70,7 @@ Connection::Connection(net::strand<net::io_context::executor_type> const &strand
     , pingTimer_ {strand}
     , tokenRefreshTimer_ {strand}
     , rng_ {std::random_device {}()}
+    , token_ {config.token}
 {
     connectingSignal_.connect([this](auto const &) { reconnectAttempts_ = 0; });
 
@@ -90,13 +91,7 @@ Connection::Connection(net::strand<net::io_context::executor_type> const &strand
         reconnectTimer_.cancel();
         pingTimer_.cancel();
         tokenRefreshTimer_.cancel();
-        withWs([this](auto &ws) {
-            ws.async_close(websocket::close_code::normal, [this](beast::error_code ec) {
-                if (ec) {
-                    errorSignal_("error while closing socket: " + ec.message());
-                }
-            });
-        });
+        closeConnection();
     });
 }
 
@@ -173,15 +168,8 @@ auto Connection::connect() -> void
     setState(ConnectionState::CONNECTING,
              DisconnectReason {DisconnectCode::NoError, "connect called"});
 
-    if (token_.empty()) {
-        token_ = !config_.token.empty() ? config_.token
-               : config_.getToken       ? config_.getToken()
-                                        : "";
-    } else if (isTokenExpired_) {
-        if (!refreshToken()) {
-            return;
-        }
-        isTokenExpired_ = false;
+    if (token_.empty() && !refreshToken()) {
+        return;
     }
 
     resolver_.async_resolve(
@@ -344,30 +332,27 @@ auto Connection::handleReceivedMsg(json const &json) -> void
     }
 
     auto const reply = json.get<Reply>();
+    std::visit(
+            [this](auto const &result) {
+                using ResultType = std::decay_t<decltype(result)>;
 
-    if (reply.error && static_cast<ErrorType>(reply.error->code) == ErrorType::TokenExpired) {
-        isTokenExpired_ = true;
-        reconnect();
-    }
-
-    if (reply.result) {
-        std::visit(
-                [this](auto const &result) {
-                    using ResultType = std::decay_t<decltype(result)>;
-
-                    if constexpr (std::is_same_v<ResultType, ConnectResult>) {
-                        setState(ConnectionState::CONNECTED, result);
-                    } else if constexpr (std::is_same_v<ResultType, RefreshResult>) {
-                        if (result.expires) {
-                            startTokenRefreshTimer(result.ttl);
-                        }
+                if constexpr (std::is_same_v<ResultType, ErrorReply>) {
+                    if (static_cast<ErrorType>(result.code) == ErrorType::TokenExpired) {
+                        token_ = std::string {};
+                        closeConnection();
+                        reconnect();
                     }
-                },
-                *reply.result);
-    }
+                } else if constexpr (std::is_same_v<ResultType, ConnectResult>) {
+                    setState(ConnectionState::CONNECTED, result);
+                } else if constexpr (std::is_same_v<ResultType, RefreshResult>) {
+                    if (result.expires) {
+                        startTokenRefreshTimer(result.ttl);
+                    }
+                }
+            },
+            reply.result);
 
     replyReceivedSignal_(reply);
-
     sentCommands_.erase(reply.id);
 }
 
@@ -425,6 +410,17 @@ auto Connection::refreshToken() -> bool
     }
     token_ = config_.getToken();
     return true;
+}
+
+auto Connection::closeConnection() -> void
+{
+    withWs([this](auto &ws) {
+        ws.async_close(websocket::close_code::normal, [this](beast::error_code ec) {
+            if (ec) {
+                errorSignal_("error while closing socket: " + ec.message());
+            }
+        });
+    });
 }
 
 auto Connection::startPingTimer() -> void

@@ -109,6 +109,10 @@ int main()
         }
     });
 
+    client.onError([](centrifugo::Error const &err) {
+        std::cout << "[CLIENT] Error: (" << err.ec.value() << ") " << err.message << std::endl;
+    });
+
     auto subCreateRes = client.newSubscription("mychan");
     if (!subCreateRes) {
         std::cout << "failed creating subscription: " << subCreateRes.error() << std::endl;
@@ -145,7 +149,8 @@ int main()
     });
 
     sub.onError([ch = sub.channel()](centrifugo::Error const &err) {
-        std::cout << "Error in subscription '" << ch << "': " << err.message << std::endl;
+        std::cout << "[CLIENT-SUB:" << ch << "] Error: (" << err.ec.value() << ") " << err.message
+                  << std::endl;
     });
 
     if (auto subRes = sub.subscribe(); subRes.has_error()) {

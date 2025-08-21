@@ -47,6 +47,7 @@ public:
     auto
     onPublication(std::function<void(std::string const &channel, Publication const &)> callback)
             -> void;
+    auto onError(std::function<void(Error const &)> callback) -> void;
 
 private:
     class Impl;

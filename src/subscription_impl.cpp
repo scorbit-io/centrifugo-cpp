@@ -152,21 +152,17 @@ auto SubscriptionImpl::handleReply(Reply const &reply) -> bool
     if (waitingReplies_.erase(reply.id) == 0) {
         return false;
     }
-    if (reply.error) {
-        errorSignal_(Error {static_cast<ErrorType>(reply.error->code), reply.error->message});
-        return true;
-    }
-    assert(reply.result);
-
     std::visit(
             [this](auto const &result) {
                 using ResultType = std::decay_t<decltype(result)>;
 
-                if constexpr (std::is_same_v<ResultType, SubscribeResult>) {
+                if constexpr (std::is_same_v<ResultType, ErrorReply>) {
+                    errorSignal_(Error {static_cast<ErrorType>(result.code), result.message});
+                } else if constexpr (std::is_same_v<ResultType, SubscribeResult>) {
                     setState(SubscriptionState::SUBSCRIBED);
                 }
             },
-            *reply.result);
+            reply.result);
     return true;
 }
 
