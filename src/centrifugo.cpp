@@ -92,12 +92,6 @@ public:
                 }
             }
         });
-
-        transport_.onError().connect([this](std::string const &error) {
-            if (onError_) {
-                onError_(Error {ErrorType::TransportError, error});
-            }
-        });
     }
 
     auto transport() -> Transport & { return transport_; }
@@ -164,6 +158,7 @@ public:
     auto onError(std::function<void(Error const &)> callback) -> void
     {
         onError_ = std::move(callback);
+        transport_.onError().connect(onError_);
     }
 
     auto publish(std::string const &channel, nlohmann::json const &data)

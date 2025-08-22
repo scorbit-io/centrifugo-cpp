@@ -45,7 +45,7 @@ public:
     using ConnectedSignal = boost::signals2::signal<void(ConnectResult const &)>;
     using DisconnectedSignal = boost::signals2::signal<void(Error const &)>;
     using ReplyReceivedSignal = boost::signals2::signal<void(Reply const &)>;
-    using ErrorSignal = boost::signals2::signal<void(std::string const &)>;
+    using ErrorSignal = boost::signals2::signal<void(Error const &)>;
 
     Transport(net::strand<net::io_context::executor_type> const &strand, std::string &&url,
               ClientConfig &&config);

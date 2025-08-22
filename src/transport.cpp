@@ -1,12 +1,15 @@
 #include "transport.h"
-#include "centrifugo/common.h"
-#include "centrifugo/error.h"
-#include "protocol_all.h"
 
 #include <cstdint>
 #include <string>
+#include <system_error>
+
 #include <openssl/ssl.h>
 #include <openssl/err.h>
+
+#include <centrifugo/common.h>
+#include <centrifugo/error.h>
+#include "protocol_all.h"
 
 namespace centrifugo {
 
@@ -59,6 +62,11 @@ auto parseUrl(std::string const &url) -> outcome::result<UrlComponents, std::str
     }
 
     return UrlComponents {host, port, path, secure};
+}
+
+auto toError(std::error_code ec) -> Error
+{
+    return Error {ec, ec.message()};
 }
 
 Transport::Transport(net::strand<net::io_context::executor_type> const &strand, std::string &&url,
@@ -172,30 +180,30 @@ auto Transport::connect() -> void
         return;
     }
 
-    resolver_.async_resolve(
-            urlComponents_.host, urlComponents_.port,
-            [this](beast::error_code ec, tcp::resolver::results_type results) {
-                if (ec) {
-                    errorSignal_("resolve error: " + ec.message());
-                    reconnect();
-                    return;
-                }
+    resolver_.async_resolve(urlComponents_.host, urlComponents_.port,
+                            [this](beast::error_code ec, tcp::resolver::results_type results) {
+                                if (ec) {
+                                    errorSignal_(toError(ec));
+                                    reconnect();
+                                    return;
+                                }
 
-                withWs([this, results](auto &ws) {
-                    net::async_connect(beast::get_lowest_layer(ws), results,
-                                       [this](beast::error_code ec,
-                                              tcp::resolver::results_type::endpoint_type) {
-                                           if (ec) {
-                                               if (ec != net::error::connection_refused) {
-                                                   errorSignal_("connect error: " + ec.message());
-                                               }
-                                               reconnect();
-                                               return;
-                                           }
-                                           handShake();
-                                       });
-                });
-            });
+                                withWs([this, results](auto &ws) {
+                                    net::async_connect(
+                                            beast::get_lowest_layer(ws), results,
+                                            [this](beast::error_code ec,
+                                                   tcp::resolver::results_type::endpoint_type) {
+                                                if (ec) {
+                                                    if (ec != net::error::connection_refused) {
+                                                        errorSignal_(toError(ec));
+                                                    }
+                                                    reconnect();
+                                                    return;
+                                                }
+                                                handShake();
+                                            });
+                                });
+                            });
 }
 
 auto Transport::reconnect(Error const &error) -> void
@@ -213,7 +221,7 @@ auto Transport::reconnect(Error const &error) -> void
     reconnectTimer_.expires_after(delay);
     reconnectTimer_.async_wait([this](beast::error_code ec) {
         if (ec) {
-            errorSignal_("reconnect timer error: " + ec.message());
+            errorSignal_(toError(ec));
             return;
         }
 
@@ -231,7 +239,7 @@ auto Transport::handShake() -> void
                                           urlComponents_.host.c_str())) {
                 auto ec = beast::error_code {static_cast<int>(::ERR_get_error()),
                                              net::error::get_ssl_category()};
-                errorSignal_("failed to set SNI hostname: " + ec.message());
+                errorSignal_(toError(ec));
                 reconnect();
                 return;
             }
@@ -239,7 +247,7 @@ auto Transport::handShake() -> void
             ws.next_layer().async_handshake(
                     net::ssl::stream_base::client, [this](beast::error_code ec) {
                         if (ec) {
-                            errorSignal_("SSL handshake error: " + ec.message());
+                            errorSignal_(toError(ec));
                             reconnect();
                             return;
                         }
@@ -248,8 +256,7 @@ auto Transport::handShake() -> void
                             ws.async_handshake(urlComponents_.host, urlComponents_.path,
                                                [this](beast::error_code ec) {
                                                    if (ec) {
-                                                       errorSignal_("webSocket handshake error: "
-                                                                    + ec.message());
+                                                       errorSignal_(toError(ec));
                                                        reconnect();
                                                        return;
                                                    }
@@ -262,7 +269,7 @@ auto Transport::handShake() -> void
             ws.async_handshake(urlComponents_.host, urlComponents_.path,
                                [this](beast::error_code ec) {
                                    if (ec) {
-                                       errorSignal_("webSocket handshake error: " + ec.message());
+                                       errorSignal_(toError(ec));
                                        reconnect();
                                        return;
                                    }
@@ -283,8 +290,6 @@ auto Transport::read() -> void
                 }
 
                 if (ec != websocket::error::closed) {
-                    errorSignal_(std::string {"read error: "} + ec.category().name() + ' '
-                                 + ec.message());
                     reconnect(Error {ec, ec.message()});
                     return;
                 }
@@ -316,7 +321,8 @@ auto Transport::read() -> void
                 try {
                     handleReceivedMsg(json::parse(line));
                 } catch (std::exception const &e) {
-                    errorSignal_("JSON parse error: " + std::string(e.what()));
+                    errorSignal_(Error {ErrorType::TransportError,
+                                        std::string {"json parse error: "} + e.what()});
                 }
             }
 
@@ -392,7 +398,7 @@ auto Transport::flush() -> void
             isWriting_ = false;
 
             if (ec) {
-                errorSignal_("send error: " + ec.message());
+                errorSignal_(toError(ec));
                 return;
             }
 
@@ -410,14 +416,16 @@ auto Transport::flush() -> void
 auto Transport::refreshToken() -> bool
 {
     if (!config_.getToken) {
-        errorSignal_("getToken must be set to handle token refresh");
+        errorSignal_(
+                Error {ErrorType::TransportError, "getToken must be set to handle token refresh"});
         setState(ConnectionState::DISCONNECTED, Error {ErrorType::Unauthorized, "unauthorized"});
         return false;
     }
 
     auto const tokenResult = config_.getToken();
     if (!tokenResult) {
-        errorSignal_("getToken failed: " + tokenResult.error().message());
+        errorSignal_(Error {ErrorType::TransportError,
+                            "getToken failed: " + tokenResult.error().message()});
         setState(ConnectionState::DISCONNECTED, Error {ErrorType::Unauthorized, "unauthorized"});
         return false;
     }
@@ -431,7 +439,7 @@ auto Transport::closeConnection() -> void
     withWs([this](auto &ws) {
         ws.async_close(websocket::close_code::normal, [this](beast::error_code ec) {
             if (ec && ec != std::errc::operation_canceled) {
-                errorSignal_("error while closing socket: " + ec.message());
+                errorSignal_(toError(ec));
             }
         });
     });
@@ -445,7 +453,7 @@ auto Transport::startPingTimer() -> void
             if (ec == net::error::operation_aborted) {
                 return;
             }
-            errorSignal_("ping timer error: " + ec.message());
+            errorSignal_(toError(ec));
             return;
         }
 
@@ -461,7 +469,7 @@ auto Transport::startTokenRefreshTimer(std::uint32_t ttlSeconds) -> void
             if (ec == net::error::operation_aborted) {
                 return;
             }
-            errorSignal_("token refresh timer error: " + ec.message());
+            errorSignal_(toError(ec));
             return;
         }
 

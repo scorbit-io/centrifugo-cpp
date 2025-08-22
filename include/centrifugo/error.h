@@ -11,8 +11,8 @@ struct Error {
 
 enum class ErrorType {
     NoError = 0,
-    NotSubscribed = 1,
-    TransportError = 2,
+    TransportError = 1,
+    NotSubscribed = 2,
 
     Unauthorized = 3,
     NoPing = 4,
