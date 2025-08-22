@@ -57,7 +57,7 @@ auto SubscriptionImpl::subscribe() -> outcome::result<void, std::string>
     state_ = SubscriptionState::SUBSCRIBING;
     subscribingSignal_();
 
-    if (transport_.state() == ConnectionState::CONNECTED) {
+    if (transport_.state() == ConnectionState::Connected) {
         sendSubscribeCmd();
     }
     return outcome::success();

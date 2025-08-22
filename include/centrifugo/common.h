@@ -31,6 +31,6 @@ struct ClientConfig {
     std::function<void(LogEntry)> logHandler;
 };
 
-enum class ConnectionState { DISCONNECTED, CONNECTING, CONNECTED };
+enum class ConnectionState { Disconnected, Connecting, Connected };
 
 }

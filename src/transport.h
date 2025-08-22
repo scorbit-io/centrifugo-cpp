@@ -102,9 +102,9 @@ private:
 
         state_ = newState;
         if constexpr ((std::is_same_v<std::decay_t<Args>, Error> && ...)) {
-            if (state_ == ConnectionState::CONNECTING) {
+            if (state_ == ConnectionState::Connecting) {
                 connectingSignal_(std::forward<Args>(args)...);
-            } else if (state_ == ConnectionState::DISCONNECTED) {
+            } else if (state_ == ConnectionState::Disconnected) {
                 disconnectedSignal_(std::forward<Args>(args)...);
             }
         } else if constexpr ((std::is_same_v<std::decay_t<Args>, ConnectResult> && ...)) {
@@ -129,7 +129,7 @@ private:
     net::steady_timer tokenRefreshTimer_;
     std::mt19937 rng_;
 
-    ConnectionState state_ = ConnectionState::DISCONNECTED;
+    ConnectionState state_ = ConnectionState::Disconnected;
     UrlComponents urlComponents_;
     std::string clientId_;
     chrono::seconds pingInterval_;

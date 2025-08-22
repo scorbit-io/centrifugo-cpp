@@ -116,7 +116,7 @@ auto Transport::sentCommands() const -> std::unordered_map<std::uint32_t, Comman
 
 auto Transport::initialConnect() -> outcome::result<void, std::string>
 {
-    if (state_ != ConnectionState::DISCONNECTED) {
+    if (state_ != ConnectionState::Disconnected) {
         return std::string {"already connected or connecting"};
     }
     if (config_.minReconnectDelay >= config_.maxReconnectDelay) {
@@ -154,7 +154,7 @@ auto Transport::initialConnect() -> outcome::result<void, std::string>
 
 auto Transport::disconnect(Error const &error) -> void
 {
-    setState(ConnectionState::DISCONNECTED, error);
+    setState(ConnectionState::Disconnected, error);
 }
 
 auto Transport::send(json const &j, Command &&cmd) -> void
@@ -174,7 +174,7 @@ auto Transport::send(json const &j, Command &&cmd) -> void
 
 auto Transport::connect() -> void
 {
-    setState(ConnectionState::CONNECTING, Error {ErrorType::NoError, "connect called"});
+    setState(ConnectionState::Connecting, Error {ErrorType::NoError, "connect called"});
 
     if (token_.empty() && !refreshToken()) {
         return;
@@ -208,7 +208,7 @@ auto Transport::connect() -> void
 
 auto Transport::reconnect(Error const &error) -> void
 {
-    setState(ConnectionState::CONNECTING, error);
+    setState(ConnectionState::Connecting, error);
     ++reconnectAttempts_;
     auto const delay = calculateBackoffDelay();
 
@@ -354,7 +354,7 @@ auto Transport::handleReceivedMsg(json const &json) -> void
                         reconnect();
                     }
                 } else if constexpr (std::is_same_v<ResultType, ConnectResult>) {
-                    setState(ConnectionState::CONNECTED, result);
+                    setState(ConnectionState::Connected, result);
                 } else if constexpr (std::is_same_v<ResultType, RefreshResult>) {
                     if (result.expires) {
                         startTokenRefreshTimer(result.ttl);
@@ -418,7 +418,7 @@ auto Transport::refreshToken() -> bool
     if (!config_.getToken) {
         errorSignal_(
                 Error {ErrorType::TransportError, "getToken must be set to handle token refresh"});
-        setState(ConnectionState::DISCONNECTED, Error {ErrorType::Unauthorized, "unauthorized"});
+        disconnect(Error {ErrorType::Unauthorized, "unauthorized"});
         return false;
     }
 
@@ -426,7 +426,7 @@ auto Transport::refreshToken() -> bool
     if (!tokenResult) {
         errorSignal_(Error {ErrorType::TransportError,
                             "getToken failed: " + tokenResult.error().message()});
-        setState(ConnectionState::DISCONNECTED, Error {ErrorType::Unauthorized, "unauthorized"});
+        disconnect(Error {ErrorType::Unauthorized, "unauthorized"});
         return false;
     }
 

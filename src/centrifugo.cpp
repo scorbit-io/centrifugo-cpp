@@ -164,7 +164,7 @@ public:
     auto publish(std::string const &channel, nlohmann::json const &data)
             -> outcome::result<void, Error>
     {
-        if (transport_.state() != ConnectionState::CONNECTED
+        if (transport_.state() != ConnectionState::Connected
             || serverSubscriptions_.count(channel) == 0) {
             return Error {ErrorType::NotSubscribed, "not subscribed"};
         }
