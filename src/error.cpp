@@ -14,6 +14,8 @@ public:
         switch (static_cast<ErrorType>(ev)) {
         case ErrorType::PermissionDenied:
             return std::errc::permission_denied;
+        case ErrorType::NotConnected:
+            return std::errc::not_connected;
         default:
             return std::errc::operation_not_supported;
         }

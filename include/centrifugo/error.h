@@ -9,10 +9,12 @@ struct Error {
     std::string message;
 };
 
+// check error codes at https://centrifugal.dev/docs/server/codes
 enum class ErrorType {
     NoError = 0,
     TransportError = 1,
     NotSubscribed = 2,
+    NotConnected = 3,
 
     Unauthorized = 3,
     NoPing = 4,
@@ -24,6 +26,7 @@ enum class ErrorType {
     Shutdown = 3001,
 
     BadRequest = 3501,
+    NotAvailable = 3508,
 };
 
 auto make_error_code(ErrorType e) -> std::error_code;

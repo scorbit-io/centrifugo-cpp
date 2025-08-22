@@ -50,6 +50,11 @@ auto to_json(json &j, RefreshRequest const &req) -> void
     j = json {{"token", req.token}};
 }
 
+auto to_json(json &j, SendRequest const &req) -> void
+{
+    j = json {{"data", req.data}};
+}
+
 auto from_json(json const &j, ConnectResult &result) -> void
 {
     if (j.contains("client"))
@@ -118,6 +123,10 @@ auto from_json(json const &j, RefreshResult &result) -> void
         j.at("ttl").get_to(result.ttl);
 }
 
+auto from_json(json const &, SendResult &) -> void
+{
+}
+
 auto to_json(json &j, Command const &cmd) -> void
 {
     j["id"] = cmd.id;
@@ -133,6 +142,8 @@ auto to_json(json &j, Command const &cmd) -> void
                     j["publish"] = req;
                 } else if constexpr (std::is_same_v<std::decay_t<decltype(req)>, RefreshRequest>) {
                     j["refresh"] = req;
+                } else if constexpr (std::is_same_v<std::decay_t<decltype(req)>, SendRequest>) {
+                    j["send"] = req;
                 }
             },
             cmd.request);
@@ -163,6 +174,8 @@ auto from_json(json const &j, Reply &reply) -> void
         reply.result = j.at("publish").get<PublishResult>();
     } else if (j.contains("refresh")) {
         reply.result = j.at("refresh").get<RefreshResult>();
+    } else if (j.contains("send")) {
+        reply.result = j.at("send").get<SendResult>();
     } else if (j.contains("push")) {
         reply.result = j.at("push").get<Push>();
     }

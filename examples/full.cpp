@@ -89,7 +89,14 @@ int main()
                   << error.message << ')' << std::endl;
     });
 
-    client.onConnected([] { std::cout << "[CLIENT] Connected to Centrifugo!" << std::endl; });
+    client.onConnected([&client] {
+        std::cout << "[CLIENT] Connected to Centrifugo!" << std::endl;
+
+        // if centrifugo does not handle sent messages, client will disconnect
+        // if (auto const result = client.send({{"message", "Hello World!"}}) !result) {
+        //     std::cout << "failed to send message: " << result.error().message << std::endl;
+        // }
+    });
 
     client.onDisconnected([](centrifugo::Error const &error) {
         std::cout << "[CLIENT] Disconnected from Centrifugo (" << error.ec.value() << ", "

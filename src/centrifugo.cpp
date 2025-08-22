@@ -173,6 +173,16 @@ public:
         return outcome::success();
     }
 
+    auto send(nlohmann::json const &data) -> outcome::result<void, Error>
+    {
+        if (transport_.state() != ConnectionState::Connected) {
+            return Error {ErrorType::NotConnected, "not connected"};
+        }
+
+        transport_.send(makeCommand(SendRequest {data}));
+        return outcome::success();
+    }
+
 private:
     auto handlePush(Push const &push) -> void
     {
@@ -309,6 +319,11 @@ auto Client::publish(std::string const &channel, nlohmann::json const &data)
         -> outcome::result<void, Error>
 {
     return pImpl->publish(channel, data);
+}
+
+auto Client::send(nlohmann::json const &data) -> outcome::result<void, Error>
+{
+    return pImpl->send(data);
 }
 
 }

@@ -31,6 +31,8 @@ public:
     auto publish(std::string const &channel, nlohmann::json const &data)
             -> outcome::result<void, Error>;
 
+    auto send(nlohmann::json const &data) -> outcome::result<void, Error>;
+
     auto newSubscription(std::string const &channel)
             -> outcome::result<std::reference_wrapper<Subscription>, std::string>;
     auto removeSubscription(SubscriptionRef const &sub) -> void;
