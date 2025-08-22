@@ -54,7 +54,7 @@ auto Subscription::onPublication(std::function<void(Publication const &)> callba
     impl->onPublication().connect(callback);
 }
 
-auto Subscription::onError(std::function<void(Error)> callback) -> void
+auto Subscription::onError(std::function<void(Error const &)> callback) -> void
 {
     impl->onError().connect(callback);
 }

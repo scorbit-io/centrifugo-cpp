@@ -247,7 +247,7 @@ auto Client::state() const -> ConnectionState
     return pImpl->transport().state();
 }
 
-auto Client::onConnecting(std::function<void(DisconnectReason const &)> callback) -> void
+auto Client::onConnecting(std::function<void(Error const &)> callback) -> void
 {
     pImpl->transport().onConnecting().connect(callback);
 }
@@ -258,7 +258,7 @@ auto Client::onConnected(std::function<void()> callback) -> void
             [callback = std::move(callback)](auto const &) { callback(); });
 }
 
-auto Client::onDisconnected(std::function<void(DisconnectReason const &)> callback) -> void
+auto Client::onDisconnected(std::function<void(Error const &)> callback) -> void
 {
     pImpl->transport().onDisconnected().connect(callback);
 }

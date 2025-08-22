@@ -79,18 +79,16 @@ int main()
                                                         std::function<std::string()>(getJwtToken),
                                                         "cpp-user", "1.0.0"});
 
-    client.onConnecting([](centrifugo::DisconnectReason const &reason) {
-        std::cout << "[CLIENT] Connecting to Centrifugo... ("
-                  << static_cast<std::uint16_t>(reason.code) << ", " << reason.reason << ')'
-                  << std::endl;
+    client.onConnecting([](centrifugo::Error const &error) {
+        std::cout << "[CLIENT] Connecting to Centrifugo... (" << error.ec.value() << ", "
+                  << error.message << ')' << std::endl;
     });
 
     client.onConnected([] { std::cout << "[CLIENT] Connected to Centrifugo!" << std::endl; });
 
-    client.onDisconnected([](centrifugo::DisconnectReason const &reason) {
-        std::cout << "[CLIENT] Disconnected from Centrifugo ("
-                  << static_cast<std::uint16_t>(reason.code) << ", " << reason.reason << ')'
-                  << std::endl;
+    client.onDisconnected([](centrifugo::Error const &error) {
+        std::cout << "[CLIENT] Disconnected from Centrifugo (" << error.ec.value() << ", "
+                  << error.message << ')' << std::endl;
     });
 
     client.onSubscribing([](std::string const &channel) {

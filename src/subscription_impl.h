@@ -16,7 +16,7 @@ public:
     using SubscribedSignal = boost::signals2::signal<void()>;
     using UnsubscribedSignal = boost::signals2::signal<void()>;
     using PublicationSignal = boost::signals2::signal<void(Publication const &)>;
-    using ErrorSignal = boost::signals2::signal<void(Error)>;
+    using ErrorSignal = boost::signals2::signal<void(Error const &)>;
 
     SubscriptionImpl(std::string const &channel, Transport &transport);
     ~SubscriptionImpl();

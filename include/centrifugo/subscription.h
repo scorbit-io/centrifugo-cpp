@@ -31,7 +31,7 @@ public:
     auto onSubscribed(std::function<void()> callback) -> void;
     auto onUnsubscribed(std::function<void()> callback) -> void;
     auto onPublication(std::function<void(Publication const &)> callback) -> void;
-    auto onError(std::function<void(Error)> callback) -> void;
+    auto onError(std::function<void(Error const &)> callback) -> void;
 
 private:
     SubscriptionImpl *impl = nullptr;

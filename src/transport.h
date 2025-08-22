@@ -17,6 +17,7 @@
 #include <nlohmann/json.hpp>
 
 #include <centrifugo/common.h>
+#include <centrifugo/error.h>
 #include "utility"
 #include "protocol_all.h"
 
@@ -40,9 +41,9 @@ struct UrlComponents {
 class Transport
 {
 public:
-    using ConnectingSignal = boost::signals2::signal<void(DisconnectReason const &)>;
+    using ConnectingSignal = boost::signals2::signal<void(Error const &)>;
     using ConnectedSignal = boost::signals2::signal<void(ConnectResult const &)>;
-    using DisconnectedSignal = boost::signals2::signal<void(DisconnectReason const &)>;
+    using DisconnectedSignal = boost::signals2::signal<void(Error const &)>;
     using ReplyReceivedSignal = boost::signals2::signal<void(Reply const &)>;
     using ErrorSignal = boost::signals2::signal<void(std::string const &)>;
 
@@ -53,8 +54,7 @@ public:
     auto sentCommands() const -> std::unordered_map<std::uint32_t, Command> const &;
 
     auto initialConnect() -> outcome::result<void, std::string>;
-    auto disconnect(DisconnectReason const &reason = {DisconnectCode::NoError, "disconnect called"})
-            -> void;
+    auto disconnect(Error const &error = {ErrorType::NoError, "disconnect called"}) -> void;
 
     template<typename T>
     auto send(T &&message) -> void
@@ -76,7 +76,7 @@ public:
 
 private:
     auto connect() -> void;
-    auto reconnect(DisconnectReason const &reason = {}) -> void;
+    auto reconnect(Error const &reason = {}) -> void;
     auto handShake() -> void;
     auto read() -> void;
     auto handleReceivedMsg(json const &json) -> void;
@@ -101,7 +101,7 @@ private:
             return;
 
         state_ = newState;
-        if constexpr ((std::is_same_v<std::decay_t<Args>, DisconnectReason> && ...)) {
+        if constexpr ((std::is_same_v<std::decay_t<Args>, Error> && ...)) {
             if (state_ == ConnectionState::CONNECTING) {
                 connectingSignal_(std::forward<Args>(args)...);
             } else if (state_ == ConnectionState::DISCONNECTED) {

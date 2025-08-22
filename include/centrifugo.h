@@ -37,9 +37,9 @@ public:
     auto subscription(std::string const &channel) const -> std::optional<SubscriptionRef>;
     auto subscriptions() const -> std::unordered_map<std::string, SubscriptionRef>;
 
-    auto onConnecting(std::function<void(DisconnectReason const &)> callback) -> void;
+    auto onConnecting(std::function<void(Error const &)> callback) -> void;
     auto onConnected(std::function<void()> callback) -> void;
-    auto onDisconnected(std::function<void(DisconnectReason const &)> callback) -> void;
+    auto onDisconnected(std::function<void(Error const &)> callback) -> void;
 
     auto onSubscribing(std::function<void(std::string const &channel)> callback) -> void;
     auto onSubscribed(std::function<void(std::string const &channel)> callback) -> void;

@@ -1,6 +1,5 @@
 #pragma once
 
-#include <cstdint>
 #include <string>
 #include <functional>
 
@@ -33,21 +32,5 @@ struct ClientConfig {
 };
 
 enum class ConnectionState { DISCONNECTED, CONNECTING, CONNECTED };
-
-enum class DisconnectCode : std::uint16_t {
-    NoError = 0,
-    ConnectionError,
-
-    Unauthorized,
-    NoPing,
-
-    Shutdown = 3001,
-    BadRequest = 3501,
-};
-
-struct DisconnectReason {
-    DisconnectCode code;
-    std::string reason;
-};
 
 }

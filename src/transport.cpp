@@ -10,6 +10,8 @@
 
 namespace centrifugo {
 
+constexpr auto TERMINAL_DISCONNECT_CODES = 3500;
+
 auto parseUrl(std::string const &url) -> outcome::result<UrlComponents, std::string>
 {
     auto parsedUrl = url;
@@ -142,9 +144,9 @@ auto Transport::initialConnect() -> outcome::result<void, std::string>
     return outcome::success();
 }
 
-auto Transport::disconnect(DisconnectReason const &reason) -> void
+auto Transport::disconnect(Error const &error) -> void
 {
-    setState(ConnectionState::DISCONNECTED, reason);
+    setState(ConnectionState::DISCONNECTED, error);
 }
 
 auto Transport::send(json const &j, Command &&cmd) -> void
@@ -164,8 +166,7 @@ auto Transport::send(json const &j, Command &&cmd) -> void
 
 auto Transport::connect() -> void
 {
-    setState(ConnectionState::CONNECTING,
-             DisconnectReason {DisconnectCode::NoError, "connect called"});
+    setState(ConnectionState::CONNECTING, Error {ErrorType::NoError, "connect called"});
 
     if (token_.empty() && !refreshToken()) {
         return;
@@ -197,9 +198,9 @@ auto Transport::connect() -> void
             });
 }
 
-auto Transport::reconnect(DisconnectReason const &reason) -> void
+auto Transport::reconnect(Error const &error) -> void
 {
-    setState(ConnectionState::CONNECTING, reason);
+    setState(ConnectionState::CONNECTING, error);
     ++reconnectAttempts_;
     auto const delay = calculateBackoffDelay();
 
@@ -284,18 +285,17 @@ auto Transport::read() -> void
                 if (ec != websocket::error::closed) {
                     errorSignal_(std::string {"read error: "} + ec.category().name() + ' '
                                  + ec.message());
-                    reconnect(
-                            DisconnectReason {DisconnectCode::ConnectionError, "connection error"});
+                    reconnect(Error {ec, ec.message()});
                     return;
                 }
 
-                auto reason = DisconnectReason {static_cast<DisconnectCode>(ws.reason().code),
-                                                std::string {ws.reason().reason}};
-                if (reason.code == DisconnectCode::BadRequest) {
-                    disconnect(reason);
+                auto error = Error {static_cast<ErrorType>(ws.reason().code),
+                                    std::string {ws.reason().reason}};
+                if (error.ec.value() >= TERMINAL_DISCONNECT_CODES) {
+                    disconnect(error);
                     return;
                 }
-                reconnect(reason);
+                reconnect(error);
                 return;
             }
 
@@ -411,16 +411,14 @@ auto Transport::refreshToken() -> bool
 {
     if (!config_.getToken) {
         errorSignal_("getToken must be set to handle token refresh");
-        setState(ConnectionState::DISCONNECTED,
-                 DisconnectReason {DisconnectCode::Unauthorized, "unauthorized"});
+        setState(ConnectionState::DISCONNECTED, Error {ErrorType::Unauthorized, "unauthorized"});
         return false;
     }
 
     auto const tokenResult = config_.getToken();
     if (!tokenResult) {
         errorSignal_("getToken failed: " + tokenResult.error().message());
-        setState(ConnectionState::DISCONNECTED,
-                 DisconnectReason {DisconnectCode::Unauthorized, "unauthorized"});
+        setState(ConnectionState::DISCONNECTED, Error {ErrorType::Unauthorized, "unauthorized"});
         return false;
     }
 
@@ -451,7 +449,7 @@ auto Transport::startPingTimer() -> void
             return;
         }
 
-        reconnect(DisconnectReason {DisconnectCode::NoPing, "no ping"});
+        reconnect(Error {ErrorType::NoPing, "no ping"});
     });
 }
 

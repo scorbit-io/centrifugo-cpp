@@ -1,4 +1,4 @@
-#include <cstdint>
+#include "centrifugo/error.h"
 #include <functional>
 #include <iostream>
 
@@ -84,18 +84,16 @@ int main()
     config.logHandler = logger;
     auto client = centrifugo::Client {strand, "ws://localhost:8000/connection/websocket", config};
 
-    client.onConnecting([](centrifugo::DisconnectReason const &reason) {
-        std::cout << "[CLIENT] Connecting to Centrifugo... ("
-                  << static_cast<std::uint16_t>(reason.code) << ", " << reason.reason << ')'
-                  << std::endl;
+    client.onConnecting([](centrifugo::Error const &error) {
+        std::cout << "[CLIENT] Connecting to Centrifugo... (" << error.ec.value() << ", "
+                  << error.message << ')' << std::endl;
     });
 
     client.onConnected([] { std::cout << "[CLIENT] Connected to Centrifugo!" << std::endl; });
 
-    client.onDisconnected([](centrifugo::DisconnectReason const &reason) {
-        std::cout << "[CLIENT] Disconnected from Centrifugo ("
-                  << static_cast<std::uint16_t>(reason.code) << ", " << reason.reason << ')'
-                  << std::endl;
+    client.onDisconnected([](centrifugo::Error const &error) {
+        std::cout << "[CLIENT] Disconnected from Centrifugo (" << error.ec.value() << ", "
+                  << error.message << ')' << std::endl;
     });
 
     client.onSubscribing([](std::string const &channel) {
