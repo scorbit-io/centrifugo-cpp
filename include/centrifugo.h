@@ -25,7 +25,7 @@ public:
 
     auto state() const -> ConnectionState;
 
-    auto connect() -> outcome::result<void, std::string>;
+    auto connect() -> outcome::result<void, Error>;
     auto disconnect() -> void;
 
     auto publish(std::string const &channel, nlohmann::json const &data)

@@ -237,7 +237,7 @@ Client::Client(net::strand<net::io_context::executor_type> const &strand, std::s
 
 Client::~Client() = default;
 
-auto Client::connect() -> outcome::result<void, std::string>
+auto Client::connect() -> outcome::result<void, Error>
 {
     return pImpl->transport().initialConnect();
 }

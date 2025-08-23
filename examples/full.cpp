@@ -198,7 +198,8 @@ int main()
     std::cout << "Starting Centrifugo client..." << std::endl;
 
     if (auto const conRes = client.connect(); !conRes) {
-        std::cout << "Failed to connect: " << conRes.error() << std::endl;
+        std::cout << "Failed to connect: (" << conRes.error().ec.value() << ") "
+                  << conRes.error().message << std::endl;
         return 1;
     }
 

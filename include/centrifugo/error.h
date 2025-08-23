@@ -12,12 +12,13 @@ struct Error {
 // check error codes at https://centrifugal.dev/docs/server/codes
 enum class ErrorType {
     NoError = 0,
-    TransportError = 1,
-    NotSubscribed = 2,
-    NotConnected = 3,
+    TransportError,
+    NotConnected,
+    NotDisconnected,
+    NotSubscribed,
 
-    Unauthorized = 3,
-    NoPing = 4,
+    Unauthorized,
+    NoPing,
 
     PermissionDenied = 103,
     AlreadySubscribed = 105,

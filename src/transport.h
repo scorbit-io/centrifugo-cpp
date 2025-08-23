@@ -53,7 +53,7 @@ public:
     auto state() const -> ConnectionState;
     auto sentCommands() const -> std::unordered_map<std::uint32_t, Command> const &;
 
-    auto initialConnect() -> outcome::result<void, std::string>;
+    auto initialConnect() -> outcome::result<void, Error>;
     auto disconnect(Error const &error = {ErrorType::NoError, "disconnect called"}) -> void;
 
     template<typename T>

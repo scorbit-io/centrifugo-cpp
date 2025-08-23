@@ -16,11 +16,11 @@ namespace centrifugo {
 
 constexpr auto TERMINAL_DISCONNECT_CODES = 3500;
 
-auto parseUrl(std::string const &url) -> outcome::result<UrlComponents, std::string>
+auto parseUrl(std::string const &url) -> outcome::result<UrlComponents, Error>
 {
     auto parseResult = boost::urls::parse_uri(url);
     if (!parseResult) {
-        return parseResult.error().message();
+        return Error {parseResult.error(), parseResult.error().message()};
     }
 
     auto secure = bool {};
@@ -29,11 +29,12 @@ auto parseUrl(std::string const &url) -> outcome::result<UrlComponents, std::str
     } else if (parseResult->scheme() == "ws") {
         secure = false;
     } else {
-        return std::string {"URL must start with ws:// or wss://"};
+        return Error {std::make_error_code(std::errc::invalid_argument),
+                      "URL must start with ws:// or wss://"};
     }
 
     if (parseResult->host().empty()) {
-        return std::string {"Host cannot be empty"};
+        return Error {std::make_error_code(std::errc::invalid_argument), "host cannot be empty"};
     }
 
     auto const port = !parseResult->port().empty() ? parseResult->port() : secure ? "433" : "80";
@@ -91,31 +92,34 @@ auto Transport::sentCommands() const -> std::unordered_map<std::uint32_t, Comman
     return sentCommands_;
 }
 
-auto Transport::initialConnect() -> outcome::result<void, std::string>
+auto Transport::initialConnect() -> outcome::result<void, Error>
 {
     if (state_ != ConnectionState::Disconnected) {
-        return std::string {"already connected or connecting"};
+        return Error {ErrorType::NotDisconnected, "not disconnected"};
     }
     if (config_.minReconnectDelay >= config_.maxReconnectDelay) {
-        return std::string {"maxReconnectDelay should be greater than minReconnectDelay"};
+        return Error {std::make_error_code(std::errc::invalid_argument),
+                      "maxReconnectDelay should be greater than minReconnectDelay"};
     }
     if (config_.minReconnectDelay.count() > 0xFFFF) {
-        return std::string {"minReconnectDelay can't be greater than 2^16"};
+        return Error {std::make_error_code(std::errc::invalid_argument),
+                      "minReconnectDelay can't be greater than 2^16"};
     }
     if (config_.name.length() > 16) {
-        return std::string {"Name cannot be longer than 16 characters"};
+        return Error {std::make_error_code(std::errc::invalid_argument),
+                      "Name cannot be longer than 16 characters"};
     }
     if (config_.version.length() > 16) {
-        return std::string {"Version cannot be longer than 16 characters"};
+        return Error {std::make_error_code(std::errc::invalid_argument),
+                      "Version cannot be longer than 16 characters"};
     }
 
     auto parseResult = parseUrl(url_);
-    if (parseResult.has_error()) {
-        return "Failed to parse URL: " + parseResult.error();
+    if (!parseResult) {
+        return parseResult.error();
     }
 
-    urlComponents_ = parseResult.value();
-
+    urlComponents_ = parseResult.assume_value();
     if (urlComponents_.secure) {
         sslContext_.emplace(net::ssl::context::tlsv13_client);
         sslContext_->set_default_verify_paths();
