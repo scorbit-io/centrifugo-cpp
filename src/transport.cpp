@@ -4,6 +4,7 @@
 #include <string>
 #include <system_error>
 
+#include <boost/url.hpp>
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 
@@ -17,51 +18,27 @@ constexpr auto TERMINAL_DISCONNECT_CODES = 3500;
 
 auto parseUrl(std::string const &url) -> outcome::result<UrlComponents, std::string>
 {
-    auto parsedUrl = url;
-    auto port = std::string {};
-    auto secure = false;
+    auto parseResult = boost::urls::parse_uri(url);
+    if (!parseResult) {
+        return parseResult.error().message();
+    }
 
-    if (parsedUrl.substr(0, 6) == "wss://") {
-        port = "443";
+    auto secure = bool {};
+    if (parseResult->scheme() == "wss") {
         secure = true;
-        parsedUrl = parsedUrl.substr(6);
-    } else if (parsedUrl.substr(0, 5) == "ws://") {
-        port = "80";
+    } else if (parseResult->scheme() == "ws") {
         secure = false;
-        parsedUrl = parsedUrl.substr(5);
     } else {
         return std::string {"URL must start with ws:// or wss://"};
     }
 
-    auto colonPos = parsedUrl.find(':');
-    auto slashPos = parsedUrl.find('/');
-
-    std::string host;
-    std::string path = "/";
-
-    if (colonPos != std::string::npos && slashPos != std::string::npos) {
-        // Both port and path specified: ws://host:port/path
-        host = parsedUrl.substr(0, colonPos);
-        port = parsedUrl.substr(colonPos + 1, slashPos - colonPos - 1);
-        path = parsedUrl.substr(slashPos);
-    } else if (colonPos != std::string::npos) {
-        // Only port specified: ws://host:port
-        host = parsedUrl.substr(0, colonPos);
-        port = parsedUrl.substr(colonPos + 1);
-    } else if (slashPos != std::string::npos) {
-        // Only path specified: ws://host/path
-        host = parsedUrl.substr(0, slashPos);
-        path = parsedUrl.substr(slashPos);
-    } else {
-        // Only host specified: ws://host
-        host = parsedUrl;
-    }
-
-    if (host.empty()) {
+    if (parseResult->host().empty()) {
         return std::string {"Host cannot be empty"};
     }
 
-    return UrlComponents {host, port, path, secure};
+    auto const port = !parseResult->port().empty() ? parseResult->port() : secure ? "433" : "80";
+    auto const path = !parseResult->path().empty() ? parseResult->path() : "/";
+    return UrlComponents {parseResult->host(), port, path, secure};
 }
 
 auto toError(std::error_code ec) -> Error

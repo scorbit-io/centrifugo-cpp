@@ -18,7 +18,7 @@ if(${FORCE_COLORED_OUTPUT})
 endif()
 
 # Find required packages
-find_package(Boost REQUIRED CONFIG COMPONENTS system)
+find_package(Boost REQUIRED CONFIG COMPONENTS system url)
 find_package(OpenSSL REQUIRED)
 find_package(nlohmann_json REQUIRED)
 
@@ -35,7 +35,7 @@ target_include_directories(
   PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
 # Link libraries
-target_link_libraries(centrifugo-cpp Boost::system OpenSSL::SSL OpenSSL::Crypto
+target_link_libraries(centrifugo-cpp Boost::system Boost::url OpenSSL::SSL OpenSSL::Crypto
                       nlohmann_json::nlohmann_json)
 
 # Compiler options
