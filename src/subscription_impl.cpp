@@ -69,9 +69,11 @@ auto SubscriptionImpl::unsubscribe() -> void
         return;
     }
 
-    // TODO: Send unsubscribe command to server
-    state_ = SubscriptionState::UNSUBSCRIBED;
-    unsubscribedSignal_();
+    if (transport_.state() == ConnectionState::Connected) {
+        sendCmd(makeCommand(UnsubscribeRequest {channel_}));
+    } else {
+        setState(SubscriptionState::UNSUBSCRIBED);
+    }
 }
 
 auto SubscriptionImpl::publish(nlohmann::json const &json) -> outcome::result<void, Error>
@@ -160,6 +162,8 @@ auto SubscriptionImpl::handleReply(Reply const &reply) -> bool
                     errorSignal_(Error {static_cast<ErrorType>(result.code), result.message});
                 } else if constexpr (std::is_same_v<ResultType, SubscribeResult>) {
                     setState(SubscriptionState::SUBSCRIBED);
+                } else if constexpr (std::is_same_v<ResultType, UnsubscribeResult>) {
+                    setState(SubscriptionState::UNSUBSCRIBED);
                 }
             },
             reply.result);

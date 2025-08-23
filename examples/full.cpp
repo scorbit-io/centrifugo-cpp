@@ -1,6 +1,8 @@
 #include "centrifugo/error.h"
 #include <functional>
 #include <iostream>
+#include <chrono>
+#include <memory>
 
 #include <boost/asio.hpp>
 #include <boost/beast/core.hpp>
@@ -145,7 +147,7 @@ int main()
         std::cout << "[CLIENT-SUB:" << ch << "] Subscribing..." << std::endl;
     });
 
-    sub.onSubscribed([subRef = subCreateRes.value()] {
+    sub.onSubscribed([&ioc, subRef = subCreateRes.value()] {
         auto &sub = subRef.get();
         std::cout << "[CLIENT-SUB:" << sub.channel() << "] Subscribed successfully!" << std::endl;
 
@@ -153,6 +155,13 @@ int main()
         if (!pubRes) {
             std::cout << "failed to publish: " << pubRes.error().message << std::endl;
         }
+
+        auto timer = std::make_shared<boost::asio::steady_timer>(ioc, std::chrono::seconds(5));
+        timer->async_wait([subRef, timer](boost::system::error_code ec) {
+            if (!ec) {
+                subRef.get().unsubscribe();
+            }
+        });
     });
 
     sub.onUnsubscribed([ch = sub.channel()] {

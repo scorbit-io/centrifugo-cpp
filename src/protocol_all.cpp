@@ -40,6 +40,11 @@ auto to_json(json &j, SubscribeRequest const &req) -> void
         j["delta"] = req.delta;
 }
 
+auto to_json(json &j, UnsubscribeRequest const &req) -> void
+{
+    j = json {{"channel", req.channel}};
+}
+
 auto to_json(json &j, PublishRequest const &req) -> void
 {
     j = json {{"channel", req.channel}, {"data", req.data}};
@@ -107,6 +112,10 @@ auto from_json(json const &j, SubscribeResult &result) -> void
         j.at("delta").get_to(result.delta);
 }
 
+auto from_json(json const &, UnsubscribeResult &) -> void
+{
+}
+
 auto from_json(json const &, PublishResult &) -> void
 {
 }
@@ -144,6 +153,9 @@ auto to_json(json &j, Command const &cmd) -> void
                     j["refresh"] = req;
                 } else if constexpr (std::is_same_v<std::decay_t<decltype(req)>, SendRequest>) {
                     j["send"] = req;
+                } else if constexpr (std::is_same_v<std::decay_t<decltype(req)>,
+                                                    UnsubscribeRequest>) {
+                    j["unsubscribe"] = req;
                 }
             },
             cmd.request);
@@ -176,6 +188,8 @@ auto from_json(json const &j, Reply &reply) -> void
         reply.result = j.at("refresh").get<RefreshResult>();
     } else if (j.contains("send")) {
         reply.result = j.at("send").get<SendResult>();
+    } else if (j.contains("unsubscribe")) {
+        reply.result = j.at("unsubscribe").get<UnsubscribeResult>();
     } else if (j.contains("push")) {
         reply.result = j.at("push").get<Push>();
     }

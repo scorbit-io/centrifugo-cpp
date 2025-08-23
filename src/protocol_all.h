@@ -33,6 +33,10 @@ struct SubscribeRequest {
     std::string delta;
 };
 
+struct UnsubscribeRequest {
+    std::string channel;
+};
+
 struct PublishRequest {
     std::string channel;
     nlohmann::json data;
@@ -58,6 +62,9 @@ struct SubscribeResult {
     std::vector<std::uint8_t> data;
     bool was_recovering {false};
     bool delta {false};
+};
+
+struct UnsubscribeResult {
 };
 
 struct ConnectResult {
@@ -102,16 +109,16 @@ struct ErrorReply {
 };
 
 struct Command {
-    using RequestType =
-            std::variant<ConnectRequest, SubscribeRequest, PublishRequest, RefreshRequest, SendRequest>;
+    using RequestType = std::variant<ConnectRequest, SubscribeRequest, UnsubscribeRequest,
+                                     PublishRequest, RefreshRequest, SendRequest>;
 
     std::uint32_t id;
     RequestType request;
 };
 
 struct Reply {
-    using ResultType = std::variant<ConnectResult, SubscribeResult, PublishResult, RefreshResult,
-                                    SendResult, Push, ErrorReply>;
+    using ResultType = std::variant<ConnectResult, SubscribeResult, UnsubscribeResult,
+                                    PublishResult, RefreshResult, SendResult, Push, ErrorReply>;
 
     std::uint32_t id;
     ResultType result;
@@ -119,12 +126,14 @@ struct Reply {
 
 auto to_json(nlohmann::json &j, ConnectRequest const &req) -> void;
 auto to_json(nlohmann::json &j, SubscribeRequest const &req) -> void;
+auto to_json(nlohmann::json &j, UnsubscribeRequest const &req) -> void;
 auto to_json(nlohmann::json &j, PublishRequest const &req) -> void;
 auto to_json(nlohmann::json &j, RefreshRequest const &req) -> void;
 auto to_json(nlohmann::json &j, SendRequest const &req) -> void;
 
 auto from_json(nlohmann::json const &j, ConnectResult &result) -> void;
 auto from_json(nlohmann::json const &j, SubscribeResult &result) -> void;
+auto from_json(nlohmann::json const &j, UnsubscribeResult &result) -> void;
 auto from_json(nlohmann::json const &j, PublishResult &result) -> void;
 auto from_json(nlohmann::json const &j, RefreshResult &result) -> void;
 auto from_json(nlohmann::json const &j, SendResult &result) -> void;
