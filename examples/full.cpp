@@ -91,13 +91,20 @@ int main()
                   << error.message << ')' << std::endl;
     });
 
-    client.onConnected([&client] {
+    client.onConnected([&client, &ioc] {
         std::cout << "[CLIENT] Connected to Centrifugo!" << std::endl;
 
         // if centrifugo does not handle sent messages, client will disconnect
         // if (auto const result = client.send({{"message", "Hello World!"}}) !result) {
         //     std::cout << "failed to send message: " << result.error().message << std::endl;
         // }
+
+        auto timer = std::make_shared<boost::asio::steady_timer>(ioc, std::chrono::seconds(10));
+        timer->async_wait([&client, timer](boost::system::error_code ec) {
+            if (!ec) {
+                client.disconnect();
+            }
+        });
     });
 
     client.onDisconnected([](centrifugo::Error const &error) {
