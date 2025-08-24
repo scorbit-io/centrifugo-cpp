@@ -10,7 +10,6 @@ compile_commands.json
 /services/scorbit-token
 
 # Devenv
-devenv*
 .devenv*
 devenv.local.nix
 
