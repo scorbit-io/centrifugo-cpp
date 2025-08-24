@@ -18,7 +18,10 @@ if(${FORCE_COLORED_OUTPUT})
 endif()
 
 # Find required packages
-find_package(Boost REQUIRED CONFIG COMPONENTS system url)
+set(BOOST_COMPILED_COMPONENTS url)
+set(BOOST_HEADER_ONLY_COMPONENTS asio beast outcome signals2 system)
+include(cmake/lib_boost.cmake)
+
 find_package(OpenSSL REQUIRED)
 find_package(nlohmann_json REQUIRED)
 
@@ -35,8 +38,8 @@ target_include_directories(
   PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
 # Link libraries
-target_link_libraries(centrifugo-cpp Boost::system Boost::url OpenSSL::SSL
-                      OpenSSL::Crypto nlohmann_json::nlohmann_json)
+target_link_libraries(centrifugo-cpp ${BOOST_LIBS} OpenSSL::SSL OpenSSL::Crypto
+                      nlohmann_json::nlohmann_json)
 
 # Compiler options
 target_compile_options(centrifugo-cpp PRIVATE -Wall -Wextra)
