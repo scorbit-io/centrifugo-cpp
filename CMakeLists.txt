@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.16)
+cmake_minimum_required(VERSION 3.17)
 project(centrifugo-cpp VERSION 0.2.0)
 
 set(CMAKE_CXX_STANDARD 17)
@@ -21,9 +21,8 @@ endif()
 set(BOOST_COMPILED_COMPONENTS url)
 set(BOOST_HEADER_ONLY_COMPONENTS asio beast outcome signals2 system)
 include(cmake/lib_boost.cmake)
-
+include(cmake/lib_nlohmann_json.cmake)
 find_package(OpenSSL REQUIRED)
-find_package(nlohmann_json REQUIRED)
 
 # Create the library target
 file(GLOB_RECURSE SOURCES "src/*.cpp" "include/*.h")
@@ -38,8 +37,8 @@ target_include_directories(
   PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
 # Link libraries
-target_link_libraries(centrifugo-cpp ${BOOST_LIBS} OpenSSL::SSL OpenSSL::Crypto
-                      nlohmann_json::nlohmann_json)
+target_link_libraries(centrifugo-cpp PUBLIC ${BOOST_LIBS} nlohmann_json::nlohmann_json
+                      OpenSSL::SSL OpenSSL::Crypto)
 
 # Compiler options
 target_compile_options(centrifugo-cpp PRIVATE -Wall -Wextra)
@@ -56,6 +55,10 @@ if(BUILD_EXAMPLES)
 endif()
 
 # ==== INSTALLATION ====
+
+include(GNUInstallDirs)
+
+install_nlohmann_json()
 
 install(
   TARGETS centrifugo-cpp
