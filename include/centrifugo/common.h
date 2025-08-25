@@ -10,7 +10,7 @@ namespace centrifugo {
 
 namespace outcome = boost::outcome_v2;
 
-enum class LogLevel { Debug };
+enum class LogLevel { Debug, Error };
 
 struct LogEntry {
     LogLevel level;

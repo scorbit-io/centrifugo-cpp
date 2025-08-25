@@ -12,6 +12,7 @@
 #include <boost/beast/websocket.hpp>
 #include <nlohmann/json.hpp>
 
+#include "centrifugo/common.h"
 #include "centrifugo/error.h"
 #include "centrifugo/subscription.h"
 #include "protocol_all.h"
@@ -25,7 +26,8 @@ class Client::Impl
 public:
     Impl(net::strand<net::io_context::executor_type> strand, std::string &&url,
          ClientConfig &&config)
-        : transport_ {strand, std::move(url), std::move(config)}
+        : logHandler_ {config.logHandler}
+        , transport_ {strand, std::move(url), std::move(config)}
     {
         transport_.onReplyReceived().connect([this](Reply const &reply) {
             for (auto &[channel, subscription] : subscriptions_) {
@@ -204,7 +206,12 @@ private:
                             return;
                         }
 
-                        // TODO: report that channel wasn't found
+                        if (logHandler_) {
+                            logHandler_(LogEntry {LogLevel::Error,
+                                                  "publication receive failed: subscription to "
+                                                  "channel doesn't exist",
+                                                  {{"channel", push.channel}}});
+                        }
                     } else if constexpr (std::is_same_v<PushType, Subscribe>) {
                         if (auto const [_, inserted] = serverSubscriptions_.emplace(push.channel);
                             inserted && onSubscribing_) {
@@ -230,6 +237,7 @@ private:
     }
 
 private:
+    std::function<void(LogEntry)> logHandler_;
     Transport transport_;
     std::unordered_map<std::string, SubscriptionImpl> subscriptions_;
     std::unordered_set<std::string> serverSubscriptions_;
@@ -337,5 +345,4 @@ auto Client::send(nlohmann::json const &data) -> outcome::result<void, Error>
 {
     return pImpl->send(data);
 }
-
 }
