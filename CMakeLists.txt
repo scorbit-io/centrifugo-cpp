@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.17)
-project(centrifugo-cpp VERSION 0.3.0)
+project(centrifugo-cpp VERSION 0.4.0)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -37,8 +37,9 @@ target_include_directories(
   PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
 # Link libraries
-target_link_libraries(centrifugo-cpp PUBLIC ${BOOST_LIBS} nlohmann_json::nlohmann_json
-                      OpenSSL::SSL OpenSSL::Crypto)
+target_link_libraries(
+  centrifugo-cpp PUBLIC ${BOOST_LIBS} nlohmann_json::nlohmann_json OpenSSL::SSL
+                        OpenSSL::Crypto)
 
 # Compiler options
 target_compile_options(centrifugo-cpp PRIVATE -Wall -Wextra)
