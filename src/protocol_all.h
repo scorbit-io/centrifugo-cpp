@@ -55,7 +55,7 @@ struct SubscribeResult {
     std::uint32_t ttl {0};
     bool recoverable {false};
     std::string epoch;
-    // std::vector<Publication> publications;
+    std::vector<Publication> publications;
     bool recovered {false};
     std::uint64_t offset {0};
     bool positioned {false};

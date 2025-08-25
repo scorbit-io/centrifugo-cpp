@@ -162,6 +162,9 @@ auto SubscriptionImpl::handleReply(Reply const &reply) -> bool
                     errorSignal_(Error {static_cast<ErrorType>(result.code), result.message});
                 } else if constexpr (std::is_same_v<ResultType, SubscribeResult>) {
                     setState(SubscriptionState::SUBSCRIBED);
+                    for (auto const &publication : result.publications) {
+                        handlePublish(publication);
+                    }
                 } else if constexpr (std::is_same_v<ResultType, UnsubscribeResult>) {
                     setState(SubscriptionState::UNSUBSCRIBED);
                 }

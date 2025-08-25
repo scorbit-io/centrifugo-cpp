@@ -96,8 +96,8 @@ auto from_json(json const &j, SubscribeResult &result) -> void
         j.at("recoverable").get_to(result.recoverable);
     if (j.contains("epoch"))
         j.at("epoch").get_to(result.epoch);
-    // if (j.contains("publications"))
-    //     j.at("publications").get_to(result.publications);
+    if (j.contains("publications"))
+        j.at("publications").get_to(result.publications);
     if (j.contains("recovered"))
         j.at("recovered").get_to(result.recovered);
     if (j.contains("offset"))
