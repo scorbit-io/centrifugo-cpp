@@ -205,6 +205,18 @@ private:
                         }
 
                         // TODO: report that channel wasn't found
+                    } else if constexpr (std::is_same_v<PushType, Subscribe>) {
+                        if (auto const [_, inserted] = serverSubscriptions_.emplace(push.channel);
+                            inserted && onSubscribing_) {
+                            onSubscribing_(push.channel);
+                        }
+                        if (onSubscribed_) {
+                            onSubscribed_(push.channel);
+                        }
+                    } else if constexpr (std::is_same_v<PushType, Unsubscribe>) {
+                        if (serverSubscriptions_.erase(push.channel) && onUnsubscribed_) {
+                            onUnsubscribed_(push.channel);
+                        }
                     }
                 },
                 push.type);

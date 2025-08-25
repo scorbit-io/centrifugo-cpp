@@ -27,6 +27,7 @@ enum class ErrorType {
     Shutdown = 3001,
 
     BadRequest = 3501,
+    ForceDisconnect = 3503,
     NotAvailable = 3508,
 };
 

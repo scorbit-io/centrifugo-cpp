@@ -94,11 +94,23 @@ struct RefreshResult {
 struct SendResult {
 };
 
+struct Subscribe {
+    bool recoverable {false};
+    std::string epoch;
+    std::uint64_t offset {0};
+    bool positioned {false};
+    // std::vector<std::uint8_t> data;
+};
+
+struct Unsubscribe {
+    std::uint32_t code {0};
+    std::string reason;
+};
+
 struct Push {
+    using PushType = std::variant<Publication, Subscribe, Unsubscribe>;
+
     std::string channel;
-
-    using PushType = std::variant<Publication>;
-
     PushType type;
 };
 
@@ -140,6 +152,8 @@ auto from_json(nlohmann::json const &j, SendResult &result) -> void;
 
 auto from_json(nlohmann::json const &j, ClientInfo &info) -> void;
 auto from_json(nlohmann::json const &j, Publication &pub) -> void;
+auto from_json(nlohmann::json const &j, Subscribe &sub) -> void;
+auto from_json(nlohmann::json const &j, Unsubscribe &unsub) -> void;
 auto from_json(nlohmann::json const &j, Push &push) -> void;
 auto from_json(nlohmann::json const &j, ErrorReply &error) -> void;
 

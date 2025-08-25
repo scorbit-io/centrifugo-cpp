@@ -215,6 +215,28 @@ auto from_json(json const &j, Publication &pub) -> void
         j.at("tags").get_to(pub.tags);
 }
 
+auto from_json(json const &j, Subscribe &sub) -> void
+{
+    if (j.contains("recoverable"))
+        j.at("recoverable").get_to(sub.recoverable);
+    if (j.contains("epoch"))
+        j.at("epoch").get_to(sub.epoch);
+    if (j.contains("offset"))
+        j.at("offset").get_to(sub.offset);
+    if (j.contains("positioned"))
+        j.at("positioned").get_to(sub.positioned);
+    // if (j.contains("data"))
+    //     j.at("data").get_to(sub.data);
+}
+
+auto from_json(json const &j, Unsubscribe &unsub) -> void
+{
+    if (j.contains("code"))
+        j.at("code").get_to(unsub.code);
+    if (j.contains("reason"))
+        j.at("reason").get_to(unsub.reason);
+}
+
 auto from_json(json const &j, Push &push) -> void
 {
     if (j.contains("channel"))
@@ -222,6 +244,10 @@ auto from_json(json const &j, Push &push) -> void
 
     if (j.contains("pub")) {
         push.type = j.at("pub").get<Publication>();
+    } else if (j.contains("subscribe")) {
+        push.type = j.at("subscribe").get<Subscribe>();
+    } else if (j.contains("unsubscribe")) {
+        push.type = j.at("unsubscribe").get<Unsubscribe>();
     }
 }
 }
