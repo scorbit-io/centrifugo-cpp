@@ -25,6 +25,7 @@ struct ClientConfig {
     std::string version;
 
     std::chrono::seconds maxPingDelay {10};
+    std::chrono::seconds refreshTokenBeforeExpiry {180}; // Refresh token when 3 minutes remain
     std::chrono::milliseconds minReconnectDelay {200};
     std::chrono::milliseconds maxReconnectDelay {20000};
 

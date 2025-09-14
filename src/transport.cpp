@@ -444,7 +444,12 @@ auto Transport::startPingTimer() -> void
 
 auto Transport::startTokenRefreshTimer(std::uint32_t ttlSeconds) -> void
 {
-    tokenRefreshTimer_.expires_after(chrono::seconds {ttlSeconds});
+    auto expiryTime = std::chrono::seconds {ttlSeconds};
+    if (expiryTime > config_.refreshTokenBeforeExpiry) {
+        expiryTime -= config_.refreshTokenBeforeExpiry;
+    }
+
+    tokenRefreshTimer_.expires_after(expiryTime);
     tokenRefreshTimer_.async_wait([this](boost::system::error_code ec) {
         if (ec) {
             if (ec == net::error::operation_aborted) {
