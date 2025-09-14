@@ -37,7 +37,7 @@ auto parseUrl(std::string const &url) -> outcome::result<UrlComponents, Error>
         return Error {std::make_error_code(std::errc::invalid_argument), "host cannot be empty"};
     }
 
-    auto const port = !parseResult->port().empty() ? parseResult->port() : secure ? "433" : "80";
+    auto const port = !parseResult->port().empty() ? parseResult->port() : secure ? "443" : "80";
     auto const path = !parseResult->path().empty() ? parseResult->path() : "/";
     return UrlComponents {parseResult->host(), port, path, secure};
 }
