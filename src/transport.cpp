@@ -124,9 +124,6 @@ auto Transport::initialConnect() -> outcome::result<void, Error>
         sslContext_.emplace(net::ssl::context::tlsv13_client);
         sslContext_->set_default_verify_paths();
         sslContext_->set_verify_mode(net::ssl::verify_peer);
-
-        auto executor = withWs([](auto &ws) { return ws.get_executor(); });
-        ws_.emplace<WssStream>(tcp::socket {executor}, *sslContext_);
     }
 
     connect();
@@ -159,6 +156,14 @@ auto Transport::connect() -> void
 
     if (token_.empty() && !refreshToken()) {
         return;
+    }
+
+    // Recreate the WebSocket stream for reconnection
+    auto executor = withWs([](auto &ws) { return ws.get_executor(); });
+    if (urlComponents_.secure) {
+        ws_.emplace<WssStream>(tcp::socket{executor}, *sslContext_);
+    } else {
+        ws_.emplace<WsStream>(tcp::socket{executor});
     }
 
     resolver_.async_resolve(urlComponents_.host, urlComponents_.port,
@@ -220,6 +225,9 @@ auto Transport::handShake() -> void
                                           urlComponents_.host.c_str())) {
                 auto ec = beast::error_code {static_cast<int>(::ERR_get_error()),
                                              net::error::get_ssl_category()};
+                config_.logHandler({LogLevel::Error,
+                                    "SSL set_tlsext_host_name error",
+                                    {{"code", ec.value()}, {"message", ec.message()}}});
                 errorSignal_(toError(ec));
                 reconnect();
                 return;
@@ -228,6 +236,10 @@ auto Transport::handShake() -> void
             ws.next_layer().async_handshake(
                     net::ssl::stream_base::client, [this](beast::error_code ec) {
                         if (ec) {
+                            config_.logHandler({LogLevel::Error,
+                                                "websocket handshake error 1",
+                                                {{"code", ec.value()},
+                                                 {"message", ec.message()}}});
                             errorSignal_(toError(ec));
                             reconnect();
                             return;
@@ -237,6 +249,10 @@ auto Transport::handShake() -> void
                             ws.async_handshake(urlComponents_.host, urlComponents_.path,
                                                [this](beast::error_code ec) {
                                                    if (ec) {
+                                                       config_.logHandler({LogLevel::Error,
+                                                                             "websocket handshake error 2",
+                                                                             {{"code", ec.value()},
+                                                                              {"message", ec.message()}}});
                                                        errorSignal_(toError(ec));
                                                        reconnect();
                                                        return;
