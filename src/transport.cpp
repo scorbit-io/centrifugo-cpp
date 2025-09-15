@@ -37,7 +37,7 @@ auto parseUrl(std::string const &url) -> outcome::result<UrlComponents, Error>
         return Error {std::make_error_code(std::errc::invalid_argument), "host cannot be empty"};
     }
 
-    auto const port = !parseResult->port().empty() ? parseResult->port() : secure ? "433" : "80";
+    auto const port = !parseResult->port().empty() ? parseResult->port() : secure ? "443" : "80";
     auto const path = !parseResult->path().empty() ? parseResult->path() : "/";
     return UrlComponents {parseResult->host(), port, path, secure};
 }
@@ -124,9 +124,6 @@ auto Transport::initialConnect() -> outcome::result<void, Error>
         sslContext_.emplace(net::ssl::context::tlsv13_client);
         sslContext_->set_default_verify_paths();
         sslContext_->set_verify_mode(net::ssl::verify_peer);
-
-        auto executor = withWs([](auto &ws) { return ws.get_executor(); });
-        ws_.emplace<WssStream>(tcp::socket {executor}, *sslContext_);
     }
 
     connect();
@@ -159,6 +156,14 @@ auto Transport::connect() -> void
 
     if (token_.empty() && !refreshToken()) {
         return;
+    }
+
+    // Recreate the WebSocket stream for reconnection
+    auto executor = resolver_.get_executor();
+    if (urlComponents_.secure) {
+        resetWebSocket<WssStream>(tcp::socket{executor}, *sslContext_);
+    } else {
+        resetWebSocket<WsStream>(tcp::socket{executor});
     }
 
     resolver_.async_resolve(urlComponents_.host, urlComponents_.port,
@@ -323,29 +328,34 @@ auto Transport::handleReceivedMsg(json const &json) -> void
         return;
     }
 
-    auto const reply = json.get<Reply>();
-    std::visit(
-            [this](auto const &result) {
-                using ResultType = std::decay_t<decltype(result)>;
+    try {
+        auto const reply = json.get<Reply>();
+        std::visit(
+                [this](auto const &result) {
+                    using ResultType = std::decay_t<decltype(result)>;
 
-                if constexpr (std::is_same_v<ResultType, ErrorReply>) {
-                    if (static_cast<ErrorType>(result.code) == ErrorType::TokenExpired) {
-                        token_ = std::string {};
-                        closeConnection();
-                        reconnect();
+                    if constexpr (std::is_same_v<ResultType, ErrorReply>) {
+                        if (static_cast<ErrorType>(result.code) == ErrorType::TokenExpired) {
+                            token_ = std::string {};
+                            closeConnection();
+                            reconnect();
+                        }
+                    } else if constexpr (std::is_same_v<ResultType, ConnectResult>) {
+                        setState(ConnectionState::Connected, result);
+                    } else if constexpr (std::is_same_v<ResultType, RefreshResult>) {
+                        if (result.expires) {
+                            startTokenRefreshTimer(result.ttl);
+                        }
                     }
-                } else if constexpr (std::is_same_v<ResultType, ConnectResult>) {
-                    setState(ConnectionState::Connected, result);
-                } else if constexpr (std::is_same_v<ResultType, RefreshResult>) {
-                    if (result.expires) {
-                        startTokenRefreshTimer(result.ttl);
-                    }
-                }
-            },
-            reply.result);
+                },
+                reply.result);
 
-    replyReceivedSignal_(reply);
-    sentCommands_.erase(reply.id);
+        replyReceivedSignal_(reply);
+        sentCommands_.erase(reply.id);
+    } catch (std::exception const &e) {
+        errorSignal_(Error {ErrorType::TransportError, std::string {"error processing reply: "}
+                                                               + e.what() + ", " + json.dump()});
+    }
 }
 
 auto Transport::sendConnectCmd() -> void

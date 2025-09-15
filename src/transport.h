@@ -18,7 +18,7 @@
 
 #include <centrifugo/common.h>
 #include <centrifugo/error.h>
-#include "utility"
+#include <utility>
 #include "protocol_all.h"
 
 namespace centrifugo {
@@ -110,6 +110,19 @@ private:
         } else if constexpr ((std::is_same_v<std::decay_t<Args>, ConnectResult> && ...)) {
             connectedSignal_(std::forward<Args>(args)...);
         }
+    }
+
+    template <typename StreamType, typename... Args>
+    void resetWebSocket(Args&&... args) {
+        // 1. Cancel and close any pending operations on the old stream
+        withWs([](auto& ws) {
+            beast::error_code ignore;
+            beast::get_lowest_layer(ws).cancel(ignore);
+            beast::get_lowest_layer(ws).close(ignore);
+        });
+
+        // 2. Reconstruct in-place
+        ws_.emplace<StreamType>(std::forward<Args>(args)...);
     }
 
 private:
