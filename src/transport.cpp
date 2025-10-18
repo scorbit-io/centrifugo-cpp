@@ -166,30 +166,42 @@ auto Transport::connect() -> void
         resetWebSocket<WsStream>(tcp::socket{executor});
     }
 
-    resolver_.async_resolve(urlComponents_.host, urlComponents_.port,
-                            [this](beast::error_code ec, tcp::resolver::results_type results) {
+    resolver_.async_resolve(
+            urlComponents_.host, urlComponents_.port,
+            [this](beast::error_code ec, tcp::resolver::results_type results) {
+                if (ec) {
+                    errorSignal_(toError(ec));
+                    reconnect();
+                    return;
+                }
+
+                withWs([this, results](auto &ws) {
+                    using WS = std::decay_t<decltype(ws)>;
+
+                    net::async_connect(
+                            beast::get_lowest_layer(ws), results,
+                            [this, &ws](beast::error_code ec,
+                                        tcp::resolver::results_type::endpoint_type) {
                                 if (ec) {
-                                    errorSignal_(toError(ec));
+                                    if (ec != net::error::connection_refused) {
+                                        errorSignal_(toError(ec));
+                                    }
                                     reconnect();
                                     return;
                                 }
 
-                                withWs([this, results](auto &ws) {
-                                    net::async_connect(
-                                            beast::get_lowest_layer(ws), results,
-                                            [this](beast::error_code ec,
-                                                   tcp::resolver::results_type::endpoint_type) {
-                                                if (ec) {
-                                                    if (ec != net::error::connection_refused) {
-                                                        errorSignal_(toError(ec));
-                                                    }
-                                                    reconnect();
-                                                    return;
-                                                }
-                                                handShake();
-                                            });
-                                });
+                                // SSL hostname verification for WssStream
+                                if constexpr (std::is_same_v<WS, WssStream>) {
+                                    ws.next_layer().set_verify_callback(
+                                            net::ssl::host_name_verification(urlComponents_.host));
+                                } else {
+                                    (void)ws;
+                                }
+
+                                handShake();
                             });
+                });
+            });
 }
 
 auto Transport::reconnect(Error const &error) -> void
