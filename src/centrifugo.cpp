@@ -335,6 +335,11 @@ auto Client::onError(std::function<void(Error const &)> callback) -> void
     pImpl->onError(std::move(callback));
 }
 
+void Client::onSslContextConfigure(std::function<bool(boost::asio::ssl::context &)> callback)
+{
+    pImpl->transport().onSslContextConfigure(std::move(callback));
+}
+
 auto Client::publish(std::string const &channel, nlohmann::json const &data)
         -> outcome::result<void, Error>
 {

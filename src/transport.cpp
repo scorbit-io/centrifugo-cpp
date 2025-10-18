@@ -122,8 +122,18 @@ auto Transport::initialConnect() -> outcome::result<void, Error>
     urlComponents_ = parseResult.assume_value();
     if (urlComponents_.secure) {
         sslContext_.emplace(net::ssl::context::tlsv13_client);
-        sslContext_->set_default_verify_paths();
         sslContext_->set_verify_mode(net::ssl::verify_peer);
+        if (sslContextConfigureCallback_) {
+            if (!sslContextConfigureCallback_(*sslContext_)) {
+                errorSignal_(
+                        Error {ErrorType::NoError,
+                               std::string {"Failed to configure SSL context with custom callback. "
+                                            "Falling back to default verification paths."}});
+                sslContext_->set_default_verify_paths();
+            }
+        } else {
+            sslContext_->set_default_verify_paths();
+        }
     }
 
     connect();

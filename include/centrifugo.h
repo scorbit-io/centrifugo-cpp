@@ -4,6 +4,7 @@
 
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/strand.hpp>
+#include <boost/asio/ssl.hpp>
 
 #include <centrifugo/subscription.h>
 #include <centrifugo/common.h>
@@ -50,6 +51,7 @@ public:
     onPublication(std::function<void(std::string const &channel, Publication const &)> callback)
             -> void;
     auto onError(std::function<void(Error const &)> callback) -> void;
+    auto onSslContextConfigure(std::function<bool(boost::asio::ssl::context &)> callback) -> void;
 
 private:
     class Impl;
