@@ -73,6 +73,11 @@ public:
     auto onDisconnected() -> DisconnectedSignal & { return disconnectedSignal_; }
     auto onReplyReceived() -> ReplyReceivedSignal & { return replyReceivedSignal_; }
     auto onError() -> ErrorSignal & { return errorSignal_; }
+    auto onSslContextConfigure(std::function<bool(boost::asio::ssl::context &sslContext)> callback)
+            -> void
+    {
+        sslContextConfigureCallback_ = std::move(callback);
+    }
 
 private:
     auto connect() -> void;
@@ -160,6 +165,8 @@ private:
     DisconnectedSignal disconnectedSignal_;
     ReplyReceivedSignal replyReceivedSignal_;
     ErrorSignal errorSignal_;
+
+    std::function<bool(boost::asio::ssl::context &)> sslContextConfigureCallback_;
 };
 
 }
