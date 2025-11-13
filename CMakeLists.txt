@@ -22,6 +22,8 @@ set(BOOST_COMPILED_COMPONENTS url)
 set(BOOST_HEADER_ONLY_COMPONENTS asio beast outcome signals2 system)
 include(cmake/lib_boost.cmake)
 include(cmake/lib_nlohmann_json.cmake)
+
+find_package(nlohmann_json 3.12.0 REQUIRED)
 find_package(OpenSSL REQUIRED)
 
 # Create the library target
