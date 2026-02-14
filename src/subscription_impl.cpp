@@ -87,6 +87,11 @@ auto SubscriptionImpl::publish(nlohmann::json const &json) -> outcome::result<vo
 
 auto SubscriptionImpl::handlePublish(Publication const &publication) -> void
 {
+    // Track stream position for recovery
+    if (publication.offset > 0) {
+        offset_ = publication.offset;
+    }
+
     publicationSignal_(publication);
 }
 
@@ -146,6 +151,14 @@ auto SubscriptionImpl::sendSubscribeCmd() -> void
 {
     auto req = SubscribeRequest {};
     req.channel = channel_;
+
+    // If we have a previous stream position, request recovery
+    if (recoverable_ && !epoch_.empty()) {
+        req.recover = true;
+        req.epoch = epoch_;
+        req.offset = offset_;
+    }
+
     sendCmd(makeCommand(std::move(req)));
 }
 
@@ -161,6 +174,15 @@ auto SubscriptionImpl::handleReply(Reply const &reply) -> bool
                 if constexpr (std::is_same_v<ResultType, ErrorReply>) {
                     errorSignal_(Error {static_cast<ErrorType>(result.code), result.message});
                 } else if constexpr (std::is_same_v<ResultType, SubscribeResult>) {
+                    // Store stream position for recovery on reconnect
+                    recoverable_ = result.recoverable;
+                    if (!result.epoch.empty()) {
+                        epoch_ = result.epoch;
+                    }
+                    if (result.offset > 0) {
+                        offset_ = result.offset;
+                    }
+
                     setState(SubscriptionState::SUBSCRIBED);
                     for (auto const &publication : result.publications) {
                         handlePublish(publication);
