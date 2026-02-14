@@ -176,12 +176,8 @@ auto SubscriptionImpl::handleReply(Reply const &reply) -> bool
                 } else if constexpr (std::is_same_v<ResultType, SubscribeResult>) {
                     // Store stream position for recovery on reconnect
                     recoverable_ = result.recoverable;
-                    if (!result.epoch.empty()) {
-                        epoch_ = result.epoch;
-                    }
-                    if (result.offset > 0) {
-                        offset_ = result.offset;
-                    }
+                    epoch_ = result.epoch;
+                    offset_ = result.offset;
 
                     setState(SubscriptionState::SUBSCRIBED);
                     for (auto const &publication : result.publications) {
