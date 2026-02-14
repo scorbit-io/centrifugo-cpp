@@ -69,6 +69,11 @@ auto SubscriptionImpl::unsubscribe() -> void
         return;
     }
 
+    // Clear recovery state so a subsequent subscribe() starts fresh
+    recoverable_ = false;
+    epoch_.clear();
+    offset_ = 0;
+
     if (transport_.state() == ConnectionState::Connected) {
         sendCmd(makeCommand(UnsubscribeRequest {channel_}));
     } else {
