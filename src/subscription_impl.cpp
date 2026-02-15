@@ -187,7 +187,12 @@ auto SubscriptionImpl::handleReply(Reply const &reply) -> bool
                     // Store stream position for recovery on reconnect
                     recoverable_ = result.recoverable;
                     epoch_ = result.epoch;
-                    offset_ = result.offset;
+                    // When there are recovered publications, let handlePublish()
+                    // advance offset_ from each one. Otherwise use result.offset
+                    // as the baseline stream position.
+                    if (result.publications.empty()) {
+                        offset_ = result.offset;
+                    }
 
                     setState(SubscriptionState::SUBSCRIBED);
                     for (auto const &publication : result.publications) {
