@@ -24,10 +24,15 @@ SubscriptionImpl::SubscriptionImpl(SubscriptionImpl &&other) noexcept
     , transport_ {other.transport_}
     , subscription_ {this}
     , state_ {other.state_}
+    , waitingReplies_ {std::move(other.waitingReplies_)}
+    , epoch_ {std::move(other.epoch_)}
+    , offset_ {other.offset_}
+    , recoverable_ {other.recoverable_}
     , subscribingSignal_ {std::move(other.subscribingSignal_)}
     , subscribedSignal_ {std::move(other.subscribedSignal_)}
     , unsubscribedSignal_ {std::move(other.unsubscribedSignal_)}
     , publicationSignal_ {std::move(other.publicationSignal_)}
+    , errorSignal_ {std::move(other.errorSignal_)}
 {
     other.deinit();
     init();
