@@ -122,8 +122,18 @@ auto Transport::initialConnect() -> outcome::result<void, Error>
     urlComponents_ = parseResult.assume_value();
     if (urlComponents_.secure) {
         sslContext_.emplace(net::ssl::context::tlsv13_client);
-        sslContext_->set_default_verify_paths();
         sslContext_->set_verify_mode(net::ssl::verify_peer);
+        if (sslContextConfigureCallback_) {
+            if (!sslContextConfigureCallback_(*sslContext_)) {
+                errorSignal_(
+                        Error {ErrorType::NoError,
+                               std::string {"Failed to configure SSL context with custom callback. "
+                                            "Falling back to default verification paths."}});
+                sslContext_->set_default_verify_paths();
+            }
+        } else {
+            sslContext_->set_default_verify_paths();
+        }
     }
 
     connect();
@@ -166,30 +176,42 @@ auto Transport::connect() -> void
         resetWebSocket<WsStream>(tcp::socket{executor});
     }
 
-    resolver_.async_resolve(urlComponents_.host, urlComponents_.port,
-                            [this](beast::error_code ec, tcp::resolver::results_type results) {
+    resolver_.async_resolve(
+            urlComponents_.host, urlComponents_.port,
+            [this](beast::error_code ec, tcp::resolver::results_type results) {
+                if (ec) {
+                    errorSignal_(toError(ec));
+                    reconnect();
+                    return;
+                }
+
+                withWs([this, results](auto &ws) {
+                    using WS = std::decay_t<decltype(ws)>;
+
+                    net::async_connect(
+                            beast::get_lowest_layer(ws), results,
+                            [this, &ws](beast::error_code ec,
+                                        tcp::resolver::results_type::endpoint_type) {
                                 if (ec) {
-                                    errorSignal_(toError(ec));
+                                    if (ec != net::error::connection_refused) {
+                                        errorSignal_(toError(ec));
+                                    }
                                     reconnect();
                                     return;
                                 }
 
-                                withWs([this, results](auto &ws) {
-                                    net::async_connect(
-                                            beast::get_lowest_layer(ws), results,
-                                            [this](beast::error_code ec,
-                                                   tcp::resolver::results_type::endpoint_type) {
-                                                if (ec) {
-                                                    if (ec != net::error::connection_refused) {
-                                                        errorSignal_(toError(ec));
-                                                    }
-                                                    reconnect();
-                                                    return;
-                                                }
-                                                handShake();
-                                            });
-                                });
+                                // SSL hostname verification for WssStream
+                                if constexpr (std::is_same_v<WS, WssStream>) {
+                                    ws.next_layer().set_verify_callback(
+                                            net::ssl::host_name_verification(urlComponents_.host));
+                                } else {
+                                    (void)ws;
+                                }
+
+                                handShake();
                             });
+                });
+            });
 }
 
 auto Transport::reconnect(Error const &error) -> void
