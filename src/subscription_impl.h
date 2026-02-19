@@ -60,6 +60,11 @@ private:
     SubscriptionState state_ = SubscriptionState::UNSUBSCRIBED;
     std::unordered_set<std::uint32_t> waitingReplies_;
 
+    // Stream recovery state
+    std::string epoch_;
+    std::uint64_t offset_ {0};
+    bool recoverable_ {false};
+
     SubscribingSignal subscribingSignal_;
     SubscribedSignal subscribedSignal_;
     UnsubscribedSignal unsubscribedSignal_;
