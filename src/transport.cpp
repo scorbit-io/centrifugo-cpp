@@ -229,6 +229,9 @@ auto Transport::reconnect(Error const &error) -> void
     reconnectTimer_.expires_after(delay);
     reconnectTimer_.async_wait([this](beast::error_code ec) {
         if (ec) {
+            if (ec == net::error::operation_aborted) {
+                return;
+            }
             errorSignal_(toError(ec));
             return;
         }
@@ -449,12 +452,10 @@ auto Transport::refreshToken() -> bool
 
 auto Transport::closeConnection() -> void
 {
-    withWs([this](auto &ws) {
-        ws.async_close(websocket::close_code::normal, [this](beast::error_code ec) {
-            if (ec && ec != std::errc::operation_canceled) {
-                errorSignal_(toError(ec));
-            }
-        });
+    withWs([](auto &ws) {
+        beast::error_code ignore;
+        beast::get_lowest_layer(ws).cancel(ignore);
+        beast::get_lowest_layer(ws).close(ignore);
     });
 }
 
