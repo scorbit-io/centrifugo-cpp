@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.17)
+cmake_minimum_required(VERSION 3.21)
 project(centrifugo-cpp VERSION 0.8.0)
 
 set(CMAKE_CXX_STANDARD 17)
@@ -58,9 +58,10 @@ endif()
 
 # ==== INSTALLATION ====
 
-include(GNUInstallDirs)
+if(PROJECT_IS_TOP_LEVEL)
+  include(GNUInstallDirs)
 
-install(
+  install(
   TARGETS centrifugo-cpp
   EXPORT centrifugo-cpp-targets
   LIBRARY DESTINATION lib
@@ -72,6 +73,7 @@ install(
 install(DIRECTORY include/ DESTINATION include)
 
 install(
-  EXPORT centrifugo-cpp-targets
-  FILE centrifugo-cpp-config.cmake
-  DESTINATION lib/cmake/centrifugo-cpp)
+    EXPORT centrifugo-cpp-targets
+    FILE centrifugo-cpp-config.cmake
+    DESTINATION lib/cmake/centrifugo-cpp)
+endif()
