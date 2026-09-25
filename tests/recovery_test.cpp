@@ -139,6 +139,7 @@ class Harness
 {
 public:
     // Token query for the n-th getToken call (1-based); runs on the client's strand.
+    // A "channels=" in it overrides the harness channel (jwt-generator takes the first).
     using TokenParams = std::function<std::string(int call)>;
 
     explicit Harness(std::string channel, TokenParams tokenParams = {})
@@ -159,6 +160,16 @@ public:
         client_.onSubscribing([this](std::string const &) {
             auto disconnect = false;
             update([this, &disconnect] { std::swap(disconnect, disconnectOnSubscribing_); });
+            if (disconnect) {
+                client_.disconnect();
+            }
+        });
+        client_.onUnsubscribed([this](std::string const &) {
+            auto disconnect = false;
+            update([this, &disconnect] {
+                ++unsubscribedCount_;
+                std::swap(disconnect, disconnectOnUnsubscribed_);
+            });
             if (disconnect) {
                 client_.disconnect();
             }
@@ -234,6 +245,12 @@ public:
         update([this] { disconnectOnSubscribing_ = true; });
     }
 
+    // The app calls Client::disconnect() from the next onUnsubscribed callback.
+    auto disconnectOnNextUnsubscribed() -> void
+    {
+        update([this] { disconnectOnUnsubscribed_ = true; });
+    }
+
     auto waitFor(std::string const &what, std::function<bool()> const &pred) -> bool
     {
         auto lock = std::unique_lock {mutex_};
@@ -259,6 +276,7 @@ public:
     auto connectSubs() -> std::vector<json> { return snapshot(&Harness::connectSubs_); }
     auto tokenCalls() -> int { return snapshot(&Harness::tokenCalls_); }
     auto subscribed() -> int { return snapshot(&Harness::subscribedCount_); }
+    auto unsubscribed() -> int { return snapshot(&Harness::unsubscribedCount_); }
 
     // Only for waitFor predicates, which run with the lock held.
     auto receivedCount() const -> std::size_t { return received_.size(); }
@@ -276,8 +294,8 @@ private:
             update([this, &call] { call = ++tokenCalls_; });
             auto const params = tokenParams_ ? tokenParams_(call) : std::string {"seconds=300"};
             auto const token = httpRequest(http::verb::get, JWT_PORT,
-                                           "/token/" + user_ + "?channels=" + channel_ + "&"
-                                                   + params);
+                                           "/token/" + user_ + "?" + params
+                                                   + "&channels=" + channel_);
             if (!token) {
                 return std::make_error_code(std::errc::connection_refused);
             }
@@ -332,8 +350,10 @@ private:
     std::condition_variable cv_;
     std::function<void()> onReconnecting_;
     bool disconnectOnSubscribing_ {false};
+    bool disconnectOnUnsubscribed_ {false};
     bool connected_ {false};
     int subscribedCount_ {0};
+    int unsubscribedCount_ {0};
     int disconnectedCount_ {0};
     int notRecoveredLogs_ {0};
     int tokenCalls_ {0};
@@ -588,6 +608,40 @@ auto testDisconnectFromSubscribing() -> bool
     return expectEq(h.received(), {}, "publications after disconnect");
 }
 
+// Reconnect drops two server subs; the app disconnects from the first onUnsubscribed.
+// onDisconnected unsubscribes the other, so the drop loop must not do it again.
+auto testDisconnectFromUnsubscribed() -> bool
+{
+    auto const suffix = uniqueSuffix();
+    auto const a = "stream:a" + suffix;
+    auto const b = "stream:b" + suffix;
+    auto const c = "stream:c" + suffix;
+    // Expire the token and reject its refresh (109): the reconnect then carries only c.
+    auto h = Harness {a, [&](int call) -> std::string {
+                          switch (call) {
+                          case 1:
+                              return "seconds=3&channels=" + a + "," + b;
+                          case 2:
+                              return std::string {"seconds=-60"};
+                          default:
+                              return "seconds=300&channels=" + c;
+                          }
+                      }};
+    h.disconnectOnNextUnsubscribed();
+    h.connect();
+    if (!h.waitFor("first subscribe", [&] { return h.subscribedCount() >= 1; })
+        || !h.waitFor("disconnect from onUnsubscribed",
+                      [&] { return h.disconnectedCount() >= 1; })) {
+        return false;
+    }
+    settle();
+    if (auto const n = h.unsubscribed(); n != 2) {
+        std::cerr << "  FAIL: expected 2 onUnsubscribed (a, b once each), got " << n << '\n';
+        return false;
+    }
+    return true;
+}
+
 }
 
 auto main() -> int
@@ -604,6 +658,7 @@ auto main() -> int
              testCacheAutoRecoverFirstConnect},
             {"cache: auto_cache_recover on empty channel", testCacheAutoRecoverEmpty},
             {"callbacks: disconnect from onSubscribing", testDisconnectFromSubscribing},
+            {"callbacks: disconnect from onUnsubscribed", testDisconnectFromUnsubscribed},
     };
     auto failed = 0;
     for (auto const &[name, test] : tests) {

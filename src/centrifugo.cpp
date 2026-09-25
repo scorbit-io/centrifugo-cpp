@@ -82,6 +82,10 @@ public:
                     it = serverSubscriptions_.erase(it);
                     if (onUnsubscribed_) {
                         onUnsubscribed_(channel);
+                        // onDisconnected already unsubscribed the rest.
+                        if (transport_.state() != ConnectionState::Connected) {
+                            return;
+                        }
                     }
                 } else {
                     ++it;
@@ -98,7 +102,8 @@ public:
                 state.recoverable = subResult.recoverable;
                 // Epoch and offset are one position: a reply without an epoch must not stomp
                 // a known one, nor pair it with an offset from a different stream.
-                if (!subResult.epoch.empty() || state.epoch.empty()) {
+                auto const positioned = !subResult.epoch.empty() || state.epoch.empty();
+                if (positioned) {
                     state.epoch = subResult.epoch;
                     // With publications, handleServerPublication() advances the offset.
                     if (subResult.publications.empty()) {
@@ -128,7 +133,7 @@ public:
                     handleServerPublication(channel, pub);
                 }
                 if (auto const it = serverSubscriptions_.find(channel);
-                    it != serverSubscriptions_.end()) {
+                    positioned && it != serverSubscriptions_.end()) {
                     it->second.offset = std::max(it->second.offset, subResult.offset);
                 }
             }

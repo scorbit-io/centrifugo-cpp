@@ -65,7 +65,9 @@ if(PROJECT_IS_TOP_LEVEL AND CENTRIFUGO_CPP_BUILD_TESTS)
   add_executable(recovery_test tests/recovery_test.cpp)
   target_link_libraries(recovery_test centrifugo-cpp)
   target_compile_options(recovery_test PRIVATE -Wall -Wextra)
-  add_test(NAME recovery_test COMMAND recovery_test)
+  # The runner brings up a private compose stack on free ports around the binary.
+  add_test(NAME recovery_test
+           COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_integration.sh ${CMAKE_CURRENT_BINARY_DIR})
   set_tests_properties(recovery_test PROPERTIES LABELS integration)
 endif()
 
