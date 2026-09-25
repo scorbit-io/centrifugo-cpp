@@ -31,8 +31,12 @@ namespace outcome = boost::outcome_v2;
 using json = nlohmann::json;
 using tcp = net::ip::tcp;
 
-// Server close codes from here up end the session; below, the client reconnects.
-constexpr auto TERMINAL_DISCONNECT_CODES = 3500;
+// Centrifugo close codes: 3000-3499 and 4000-4499 ask the client to reconnect,
+// 3500-3999 and 4500-4999 end the session. Anything else reconnects.
+constexpr auto isTerminalDisconnectCode(int const code) -> bool
+{
+    return (code >= 3500 && code < 4000) || (code >= 4500 && code < 5000);
+}
 
 struct UrlComponents {
     std::string host;

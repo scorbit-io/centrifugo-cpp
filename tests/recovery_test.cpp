@@ -39,7 +39,7 @@ auto constexpr API_KEY = "api-key";
 auto constexpr WAIT_TIMEOUT = 10s;
 // Quiet period after the expected publications arrive, to catch late duplicates.
 auto constexpr SETTLE_TIME = 1500ms;
-// Centrifugo: 3000-3499 reconnect; 4500-4999 terminal (also >= 3500 for this library).
+// Centrifugo: 3000-3499 and 4000-4499 reconnect; 3500-3999 and 4500-4999 are terminal.
 auto constexpr RECONNECT_CODE = 3000;
 auto constexpr TERMINAL_CODE = 4500;
 auto constexpr TOKEN_EXPIRED = 109;
@@ -415,7 +415,7 @@ auto testStreamClientReconnect() -> bool
 }
 
 // Server-forced disconnect with a reconnect code: the transport reconnects on its own.
-auto testStreamTransportReconnect() -> bool
+auto testStreamTransportReconnectWith(int const code) -> bool
 {
     auto const channel = "stream:" + uniqueSuffix();
     auto h = Harness {channel};
@@ -424,7 +424,7 @@ auto testStreamTransportReconnect() -> bool
     }
     // Publishing inside onConnecting guarantees the client is offline when P2/P3 land.
     h.onNextReconnect([&] { publish(channel, "P2") && publish(channel, "P3"); });
-    if (!apiDisconnect(h.user(), RECONNECT_CODE)
+    if (!apiDisconnect(h.user(), code)
         || !h.waitFor("automatic re-subscribe", [&] { return h.subscribedCount() >= 2; })
         || !h.waitFor("P2, P3", [&] { return h.receivedCount() >= 3; })) {
         return false;
@@ -432,6 +432,17 @@ auto testStreamTransportReconnect() -> bool
     settle();
     return expectEq(h.received(), {"P1", "P2", "P3"}, "transport reconnect recovery")
         && expectClean(h);
+}
+
+auto testStreamTransportReconnect() -> bool
+{
+    return testStreamTransportReconnectWith(RECONNECT_CODE);
+}
+
+// 4000-4499 are application reconnect codes: the client must reconnect and recover.
+auto testStreamApplicationReconnect() -> bool
+{
+    return testStreamTransportReconnectWith(4000);
 }
 
 // Connect token expires and its refresh is rejected (109): reconnect with a fresh token.
@@ -584,6 +595,7 @@ auto main() -> int
     auto const tests = std::vector<std::pair<std::string, std::function<bool()>>> {
             {"stream: Client::disconnect + connect", testStreamClientReconnect},
             {"stream: server disconnect, transport reconnect", testStreamTransportReconnect},
+            {"stream: application reconnect code 4000", testStreamApplicationReconnect},
             {"stream: token expired, reconnect with fresh token", testStreamTokenExpired},
             {"stream: history overflow is reported", testStreamHistoryOverflow},
             {"stream: terminal disconnect clears positions", testStreamTerminalDisconnect},
