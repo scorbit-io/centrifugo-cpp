@@ -139,7 +139,7 @@ public:
             // Terminal server disconnect: no reconnect follows, so the positions are stale
             // (centrifuge-go clears server subs likewise). Client::disconnect() keeps them.
             if (error.ec.category() == make_error_code(ErrorType::NoError).category()
-                && error.ec.value() >= TERMINAL_DISCONNECT_CODES) {
+                && isTerminalDisconnectCode(error.ec.value())) {
                 serverSubscriptions_.clear();
             }
         });

@@ -305,7 +305,7 @@ auto Transport::read() -> void
 
                 auto error = Error {static_cast<ErrorType>(ws.reason().code),
                                     std::string {ws.reason().reason}};
-                if (error.ec.value() >= TERMINAL_DISCONNECT_CODES) {
+                if (isTerminalDisconnectCode(error.ec.value())) {
                     disconnect(error);
                     return;
                 }
