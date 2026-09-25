@@ -16,6 +16,7 @@ struct Publication {
     nlohmann::json data;
     std::optional<ClientInfo> info;
     std::unordered_map<std::string, std::string> tags;
+    std::string epoch;
 };
 
 }

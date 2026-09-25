@@ -9,7 +9,7 @@ SECRET = os.getenv("JWT_SECRET", "my-secret-key")
 
 @app.route("/")
 def index():
-    return "<h2>JWT Token Generator</h2><p>Usage: /token/username?seconds=300</p><p>Includes server-side subscriptions for channels: testchan, otherchan</p>"
+    return "<h2>JWT Token Generator</h2><p>Usage: /token/username?seconds=300</p><p>Includes server-side subscriptions for channels: testchan, otherchan (override with ?channels=a,b)</p>"
 
 
 @app.route("/token/<user>")
@@ -17,7 +17,8 @@ def get_token(user):
     seconds = int(request.args.get("seconds", 3600))  # Default to 1 hour
     exp_time = int(time.time()) + seconds
 
-    channels = ["testchan", "otherchan"]
+    requested = request.args.get("channels", "")
+    channels = [c for c in requested.split(",") if c] or ["testchan", "otherchan"]
     token = jwt.encode(
         {"sub": user, "exp": exp_time, "channels": channels}, SECRET, algorithm="HS256"
     )

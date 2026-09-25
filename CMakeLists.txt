@@ -56,6 +56,21 @@ if(BUILD_EXAMPLES)
   endforeach()
 endif()
 
+# ==== TESTS ====
+
+# Integration tests; need the docker compose stack (see tests/run_integration.sh).
+option(CENTRIFUGO_CPP_BUILD_TESTS "Build the docker-backed integration tests" OFF)
+if(PROJECT_IS_TOP_LEVEL AND CENTRIFUGO_CPP_BUILD_TESTS)
+  enable_testing()
+  add_executable(recovery_test tests/recovery_test.cpp)
+  target_link_libraries(recovery_test centrifugo-cpp)
+  target_compile_options(recovery_test PRIVATE -Wall -Wextra)
+  # The runner brings up a private compose stack on free ports around the binary.
+  add_test(NAME recovery_test
+           COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_integration.sh ${CMAKE_CURRENT_BINARY_DIR})
+  set_tests_properties(recovery_test PROPERTIES LABELS integration)
+endif()
+
 # ==== INSTALLATION ====
 
 if(PROJECT_IS_TOP_LEVEL)

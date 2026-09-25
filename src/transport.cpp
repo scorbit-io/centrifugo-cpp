@@ -14,8 +14,6 @@
 
 namespace centrifugo {
 
-constexpr auto TERMINAL_DISCONNECT_CODES = 3500;
-
 auto parseUrl(std::string const &url) -> outcome::result<UrlComponents, Error>
 {
     auto parseResult = boost::urls::parse_uri(url);
@@ -307,7 +305,7 @@ auto Transport::read() -> void
 
                 auto error = Error {static_cast<ErrorType>(ws.reason().code),
                                     std::string {ws.reason().reason}};
-                if (error.ec.value() >= TERMINAL_DISCONNECT_CODES) {
+                if (isTerminalDisconnectCode(error.ec.value())) {
                     disconnect(error);
                     return;
                 }
@@ -334,6 +332,10 @@ auto Transport::read() -> void
                 } catch (std::exception const &e) {
                     errorSignal_(Error {ErrorType::TransportError,
                                         std::string {"json parse error: "} + e.what()});
+                }
+                // A callback disconnected: a read on the closed socket would fail and reconnect.
+                if (state_ == ConnectionState::Disconnected) {
+                    return;
                 }
             }
 
@@ -389,7 +391,10 @@ auto Transport::sendConnectCmd() -> void
     req.token = token_;
     req.name = config_.name.empty() ? "cpp" : config_.name;
     req.version = config_.version;
-    send(makeCommand(req));
+    if (connectSubsProvider_) {
+        req.subs = connectSubsProvider_();
+    }
+    send(makeCommand(std::move(req)));
 }
 
 auto Transport::flush() -> void
