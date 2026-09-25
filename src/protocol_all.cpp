@@ -4,6 +4,18 @@ namespace centrifugo {
 
 using json = nlohmann::json;
 
+auto to_json(json &j, ConnectSubRequest const &req) -> void
+{
+    j = json::object();
+
+    if (req.recover)
+        j["recover"] = req.recover;
+    if (!req.epoch.empty())
+        j["epoch"] = req.epoch;
+    if (req.offset != 0)
+        j["offset"] = req.offset;
+}
+
 auto to_json(json &j, ConnectRequest const &req) -> void
 {
     j = json {{"name", req.name}};
@@ -12,6 +24,8 @@ auto to_json(json &j, ConnectRequest const &req) -> void
         j["token"] = req.token;
     if (!req.data.empty())
         j["data"] = req.data;
+    if (!req.subs.empty())
+        j["subs"] = req.subs;
     if (!req.version.empty())
         j["version"] = req.version;
 }
@@ -70,8 +84,11 @@ auto from_json(json const &j, ConnectResult &result) -> void
         j.at("expires").get_to(result.expires);
     if (j.contains("ttl"))
         j.at("ttl").get_to(result.ttl);
-    if (j.contains("data"))
-        j.at("data").get_to(result.data.value());
+    // Embedded JSON in this protocol, not necessarily a string: an object must not throw.
+    if (j.contains("data")) {
+        auto const &data = j.at("data");
+        result.data = data.is_string() ? data.get<std::string>() : data.dump();
+    }
     if (j.contains("subs"))
         j.at("subs").get_to(result.subs);
     if (j.contains("ping"))
@@ -104,8 +121,11 @@ auto from_json(json const &j, SubscribeResult &result) -> void
         j.at("offset").get_to(result.offset);
     if (j.contains("positioned"))
         j.at("positioned").get_to(result.positioned);
-    if (j.contains("data"))
-        j.at("data").get_to(result.data);
+    if (j.contains("data")) {
+        // Embedded JSON in this protocol: an object here must not throw.
+        auto const &data = j.at("data");
+        result.data = data.is_string() ? data.get<std::string>() : data.dump();
+    }
     if (j.contains("was_recovering"))
         j.at("was_recovering").get_to(result.was_recovering);
     if (j.contains("delta"))
@@ -213,6 +233,8 @@ auto from_json(json const &j, Publication &pub) -> void
         pub.info = j.at("info").get<ClientInfo>();
     if (j.contains("tags"))
         j.at("tags").get_to(pub.tags);
+    if (j.contains("epoch"))
+        j.at("epoch").get_to(pub.epoch);
 }
 
 auto from_json(json const &j, Subscribe &sub) -> void

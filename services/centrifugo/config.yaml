@@ -12,6 +12,26 @@ channel:
   without_namespace:
     allow_subscribe_for_client: true
     allow_publish_for_subscriber: true
+  # Used by tests/recovery_test.cpp via server-side (JWT `channels`) subscriptions.
+  namespaces:
+    - name: "stream"
+      history_size: 10
+      history_ttl: "300s"
+      force_recovery: true
+    - name: "cache"
+      history_size: 1
+      history_ttl: "300s"
+      force_recovery: true
+      force_recovery_mode: "cache"
+      auto_cache_recover: true
+    - name: "cachec"
+      history_size: 1
+      history_ttl: "300s"
+      force_recovery: true
+      force_recovery_mode: "cache"
+
+http_api:
+  key: "api-key"
 
 log:
   level: "debug"

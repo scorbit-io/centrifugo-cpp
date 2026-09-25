@@ -14,8 +14,6 @@
 
 namespace centrifugo {
 
-constexpr auto TERMINAL_DISCONNECT_CODES = 3500;
-
 auto parseUrl(std::string const &url) -> outcome::result<UrlComponents, Error>
 {
     auto parseResult = boost::urls::parse_uri(url);
@@ -389,7 +387,10 @@ auto Transport::sendConnectCmd() -> void
     req.token = token_;
     req.name = config_.name.empty() ? "cpp" : config_.name;
     req.version = config_.version;
-    send(makeCommand(req));
+    if (connectSubsProvider_) {
+        req.subs = connectSubsProvider_();
+    }
+    send(makeCommand(std::move(req)));
 }
 
 auto Transport::flush() -> void

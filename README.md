@@ -61,6 +61,27 @@ The project includes Docker services for development:
 docker compose up -d # Starts Centrifugo server and JWT generator service to be used with "full" example
 ```
 
+## Integration Tests
+
+`tests/recovery_test.cpp` checks history recovery for server-side subscriptions (channels granted
+by the connection token) against a real Centrifugo (`stream:`, `cache:` and `cachec:` namespaces in
+`services/centrifugo/config.yaml`), including server-forced reconnects and token expiry. It needs
+Docker and is built only in a top-level build (CTest label `integration`):
+
+```bash
+cmake -S . -B build -DCENTRIFUGO_CPP_BUILD_TESTS=ON
+cmake --build build
+tests/run_integration.sh   # private compose project on free 127.0.0.1 ports; runs test; tears down
+```
+
+## Server-side Subscriptions
+
+Channels granted by the connection token's `channels` claim are recovered automatically on
+reconnect. For those channels, `onSubscribed` and any recovered `onPublication` calls fire
+**before** `onConnected`. If the server cannot recover a gap, the client logs a
+`LogLevel::Error` entry ("server-side subscription not recovered"); publications may have been
+missed. Handlers should be idempotent.
+
 ## Architecture
 
 ### Core Components

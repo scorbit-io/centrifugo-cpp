@@ -13,9 +13,17 @@
 
 namespace centrifugo {
 
+// Recovery position for a server-side subscription, sent in ConnectRequest.subs.
+struct ConnectSubRequest {
+    bool recover {false};
+    std::string epoch;
+    std::uint64_t offset {0};
+};
+
 struct ConnectRequest {
     std::string token;
     std::string data;
+    std::unordered_map<std::string, ConnectSubRequest> subs;
     std::string name;
     std::string version;
 };
@@ -59,7 +67,8 @@ struct SubscribeResult {
     bool recovered {false};
     std::uint64_t offset {0};
     bool positioned {false};
-    std::vector<std::uint8_t> data;
+    // String payload unquoted; any other JSON value serialized with dump().
+    std::string data;
     bool was_recovering {false};
     bool delta {false};
 };
@@ -72,6 +81,7 @@ struct ConnectResult {
     std::string version;
     bool expires {false};
     std::uint32_t ttl {0};
+    // String payload unquoted; any other JSON value serialized with dump().
     std::optional<std::string> data;
     std::unordered_map<std::string, SubscribeResult> subs;
     std::uint32_t ping {0};
@@ -136,6 +146,7 @@ struct Reply {
     ResultType result;
 };
 
+auto to_json(nlohmann::json &j, ConnectSubRequest const &req) -> void;
 auto to_json(nlohmann::json &j, ConnectRequest const &req) -> void;
 auto to_json(nlohmann::json &j, SubscribeRequest const &req) -> void;
 auto to_json(nlohmann::json &j, UnsubscribeRequest const &req) -> void;

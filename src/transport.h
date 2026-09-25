@@ -31,6 +31,9 @@ namespace outcome = boost::outcome_v2;
 using json = nlohmann::json;
 using tcp = net::ip::tcp;
 
+// Server close codes from here up end the session; below, the client reconnects.
+constexpr auto TERMINAL_DISCONNECT_CODES = 3500;
+
 struct UrlComponents {
     std::string host;
     std::string port;
@@ -46,6 +49,8 @@ public:
     using DisconnectedSignal = boost::signals2::signal<void(Error const &)>;
     using ReplyReceivedSignal = boost::signals2::signal<void(Reply const &)>;
     using ErrorSignal = boost::signals2::signal<void(Error const &)>;
+    using ConnectSubsProvider =
+            std::function<std::unordered_map<std::string, ConnectSubRequest>()>;
 
     Transport(net::strand<net::io_context::executor_type> const &strand, std::string &&url,
               ClientConfig &&config);
@@ -77,6 +82,11 @@ public:
             -> void
     {
         sslContextConfigureCallback_ = std::move(callback);
+    }
+    // Supplies recovery positions of server-side subscriptions for each connect command.
+    auto setConnectSubsProvider(ConnectSubsProvider provider) -> void
+    {
+        connectSubsProvider_ = std::move(provider);
     }
 
 private:
@@ -167,6 +177,7 @@ private:
     ErrorSignal errorSignal_;
 
     std::function<bool(boost::asio::ssl::context &)> sslContextConfigureCallback_;
+    ConnectSubsProvider connectSubsProvider_;
 };
 
 }

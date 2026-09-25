@@ -1,5 +1,6 @@
 #include <centrifugo.h>
 
+#include <algorithm>
 #include <functional>
 #include <optional>
 #include <regex>
@@ -52,9 +53,22 @@ public:
                     reply.result);
         });
 
+        transport_.setConnectSubsProvider([this] {
+            // Like centrifuge-go: only recoverable server subs ask for recovery.
+            auto subs = std::unordered_map<std::string, ConnectSubRequest> {};
+            recoveryRequested_.clear();
+            for (auto const &[channel, state] : serverSubscriptions_) {
+                if (state.recoverable) {
+                    subs.emplace(channel, ConnectSubRequest {true, state.epoch, state.offset});
+                    recoveryRequested_.emplace(channel, state.epoch);
+                }
+            }
+            return subs;
+        });
+
         transport_.onConnecting().connect([this](auto const &) {
             if (onSubscribing_) {
-                for (auto const &chan : serverSubscriptions_) {
+                for (auto const &[chan, _] : serverSubscriptions_) {
                     onSubscribing_(chan);
                 }
             }
@@ -63,35 +77,70 @@ public:
         transport_.onConnected().connect([this](ConnectResult const &result) {
             auto it = serverSubscriptions_.begin();
             while (it != serverSubscriptions_.end()) {
-                if (result.subs.count(*it) == 0) {
-                    if (onUnsubscribed_) {
-                        onUnsubscribed_(*it);
-                    }
+                if (result.subs.count(it->first) == 0) {
+                    auto const channel = it->first;
                     it = serverSubscriptions_.erase(it);
+                    if (onUnsubscribed_) {
+                        onUnsubscribed_(channel);
+                    }
                 } else {
                     ++it;
                 }
             }
 
             for (auto const &[channel, subResult] : result.subs) {
-                if (serverSubscriptions_.count(channel) == 0) {
-                    serverSubscriptions_.emplace(channel);
-                    if (onSubscribing_) {
-                        onSubscribing_(channel);
-                    }
+                // The app may disconnect from inside a callback; stop delivering then.
+                if (transport_.state() != ConnectionState::Connected) {
+                    return;
+                }
+                auto const [stateIt, inserted] = serverSubscriptions_.try_emplace(channel);
+                auto &state = stateIt->second;
+                state.recoverable = subResult.recoverable;
+                // An empty epoch must not stomp a known one.
+                if (!subResult.epoch.empty() || state.epoch.empty()) {
+                    state.epoch = subResult.epoch;
+                }
+                // With publications, handleServerPublication() advances the offset.
+                if (subResult.publications.empty()) {
+                    state.offset = subResult.offset;
                 }
 
+                if (inserted && onSubscribing_) {
+                    onSubscribing_(channel);
+                }
+                if (continuityLost(channel, subResult) && logHandler_) {
+                    logHandler_(LogEntry {LogLevel::Error,
+                                          "server-side subscription not recovered, "
+                                          "publications may have been missed",
+                                          {{"channel", channel}}});
+                }
                 if (onSubscribed_) {
                     onSubscribed_(channel);
+                }
+                for (auto const &pub : subResult.publications) {
+                    if (transport_.state() != ConnectionState::Connected) {
+                        return;
+                    }
+                    handleServerPublication(channel, pub);
+                }
+                if (auto const it = serverSubscriptions_.find(channel);
+                    it != serverSubscriptions_.end()) {
+                    it->second.offset = std::max(it->second.offset, subResult.offset);
                 }
             }
         });
 
-        transport_.onDisconnected().connect([this](auto const &) {
+        transport_.onDisconnected().connect([this](Error const &error) {
             if (onUnsubscribed_) {
-                for (auto const &chan : serverSubscriptions_) {
+                for (auto const &[chan, _] : serverSubscriptions_) {
                     onUnsubscribed_(chan);
                 }
+            }
+            // Terminal server disconnect: no reconnect follows, so the positions are stale
+            // (centrifuge-go clears server subs likewise). Client::disconnect() keeps them.
+            if (error.ec.category() == make_error_code(ErrorType::NoError).category()
+                && error.ec.value() >= TERMINAL_DISCONNECT_CODES) {
+                serverSubscriptions_.clear();
             }
         });
     }
@@ -194,9 +243,7 @@ private:
 
                     if constexpr (std::is_same_v<PushType, Publication>) {
                         if (serverSubscriptions_.count(push.channel)) {
-                            if (onPublication_) {
-                                onPublication_(push.channel, type);
-                            }
+                            handleServerPublication(push.channel, type);
                             return;
                         }
 
@@ -213,8 +260,13 @@ private:
                                                   {{"channel", push.channel}}});
                         }
                     } else if constexpr (std::is_same_v<PushType, Subscribe>) {
-                        if (auto const [_, inserted] = serverSubscriptions_.emplace(push.channel);
-                            inserted && onSubscribing_) {
+                        auto const inserted =
+                                serverSubscriptions_
+                                        .insert_or_assign(push.channel,
+                                                          ServerSubState {type.offset, type.epoch,
+                                                                          type.recoverable})
+                                        .second;
+                        if (inserted && onSubscribing_) {
                             onSubscribing_(push.channel);
                         }
                         if (onSubscribed_) {
@@ -229,6 +281,31 @@ private:
                 push.type);
     }
 
+    // Server reports was_recovering && !recovered also on a fresh subscribe and, in cache
+    // mode, for a channel with nothing published. Only a position we sent, on a stream that
+    // has moved (offset > 0) or changed epoch, can have lost publications.
+    auto continuityLost(std::string const &channel, SubscribeResult const &result) const -> bool
+    {
+        auto const it = recoveryRequested_.find(channel);
+        return result.was_recovering && !result.recovered && it != recoveryRequested_.end()
+            && (result.offset > 0 || result.epoch != it->second);
+    }
+
+    auto handleServerPublication(std::string const &channel, Publication const &pub) -> void
+    {
+        // Same rule as centrifuge-go's handleServerPublication.
+        if (auto const it = serverSubscriptions_.find(channel);
+            it != serverSubscriptions_.end() && it->second.recoverable && pub.offset > 0) {
+            it->second.offset = pub.offset;
+            if (it->second.epoch.empty() && !pub.epoch.empty()) {
+                it->second.epoch = pub.epoch;
+            }
+        }
+        if (onPublication_) {
+            onPublication_(channel, pub);
+        }
+    }
+
     auto sendSubscribeCmd(std::string const &channel) -> void
     {
         auto req = SubscribeRequest {};
@@ -240,7 +317,15 @@ private:
     std::function<void(LogEntry)> logHandler_;
     Transport transport_;
     std::unordered_map<std::string, SubscriptionImpl> subscriptions_;
-    std::unordered_set<std::string> serverSubscriptions_;
+    // Stream position per server-side channel (JWT `channels` claim), for recovery on reconnect.
+    struct ServerSubState {
+        std::uint64_t offset {0};
+        std::string epoch;
+        bool recoverable {false};
+    };
+    std::unordered_map<std::string, ServerSubState> serverSubscriptions_;
+    // Server-side channel -> epoch sent with the last connect command.
+    std::unordered_map<std::string, std::string> recoveryRequested_;
 
     std::function<void(std::string const &)> onSubscribing_;
     std::function<void(std::string const &)> onSubscribed_;
@@ -279,8 +364,13 @@ auto Client::onConnecting(std::function<void(Error const &)> callback) -> void
 
 auto Client::onConnected(std::function<void()> callback) -> void
 {
+    // Not after a callback earlier in the same connect disconnected the client.
     pImpl->transport().onConnected().connect(
-            [callback = std::move(callback)](auto const &) { callback(); });
+            [impl = pImpl.get(), callback = std::move(callback)](auto const &) {
+                if (impl->transport().state() == ConnectionState::Connected) {
+                    callback();
+                }
+            });
 }
 
 auto Client::onDisconnected(std::function<void(Error const &)> callback) -> void

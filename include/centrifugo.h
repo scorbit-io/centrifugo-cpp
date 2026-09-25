@@ -41,6 +41,8 @@ public:
     auto subscriptions() const -> std::unordered_map<std::string, SubscriptionRef>;
 
     auto onConnecting(std::function<void(Error const &)> callback) -> void;
+    // Fires after onSubscribed and the recovered onPublication calls for server-side
+    // subscriptions (JWT `channels` claim) carried by the same connect reply.
     auto onConnected(std::function<void()> callback) -> void;
     auto onDisconnected(std::function<void(Error const &)> callback) -> void;
 
