@@ -156,6 +156,13 @@ public:
                 hook();
             }
         });
+        client_.onSubscribing([this](std::string const &) {
+            auto disconnect = false;
+            update([this, &disconnect] { std::swap(disconnect, disconnectOnSubscribing_); });
+            if (disconnect) {
+                client_.disconnect();
+            }
+        });
         client_.onConnected([this] { update([this] { connected_ = true; }); });
         client_.onDisconnected([this](centrifugo::Error const &) {
             update([this] {
@@ -221,6 +228,12 @@ public:
         update([this, &hook] { onReconnecting_ = std::move(hook); });
     }
 
+    // The app calls Client::disconnect() from the next onSubscribing callback.
+    auto disconnectOnNextSubscribing() -> void
+    {
+        update([this] { disconnectOnSubscribing_ = true; });
+    }
+
     auto waitFor(std::string const &what, std::function<bool()> const &pred) -> bool
     {
         auto lock = std::unique_lock {mutex_};
@@ -245,6 +258,7 @@ public:
     auto notRecoveredLogs() -> int { return snapshot(&Harness::notRecoveredLogs_); }
     auto connectSubs() -> std::vector<json> { return snapshot(&Harness::connectSubs_); }
     auto tokenCalls() -> int { return snapshot(&Harness::tokenCalls_); }
+    auto subscribed() -> int { return snapshot(&Harness::subscribedCount_); }
 
     // Only for waitFor predicates, which run with the lock held.
     auto receivedCount() const -> std::size_t { return received_.size(); }
@@ -317,6 +331,7 @@ private:
     std::mutex mutex_;
     std::condition_variable cv_;
     std::function<void()> onReconnecting_;
+    bool disconnectOnSubscribing_ {false};
     bool connected_ {false};
     int subscribedCount_ {0};
     int disconnectedCount_ {0};
@@ -540,6 +555,28 @@ auto testCacheAutoRecoverEmpty() -> bool
     return expectEq(h.received(), {}, "empty channel") && expectClean(h);
 }
 
+// Client::disconnect() from onSubscribing: no onSubscribed or publications may follow.
+auto testDisconnectFromSubscribing() -> bool
+{
+    auto const channel = "cache:" + uniqueSuffix();
+    if (!publish(channel, "X")) {
+        return false;
+    }
+    auto h = Harness {channel};
+    h.disconnectOnNextSubscribing();
+    h.connect();
+    if (!h.waitFor("disconnect", [&] { return h.disconnectedCount() >= 1; })) {
+        return false;
+    }
+    settle();
+    auto const subscribed = h.subscribed();
+    if (subscribed != 0) {
+        std::cerr << "  FAIL: onSubscribed fired " << subscribed << " time(s) after disconnect\n";
+        return false;
+    }
+    return expectEq(h.received(), {}, "publications after disconnect");
+}
+
 }
 
 auto main() -> int
@@ -554,6 +591,7 @@ auto main() -> int
             {"cache: first-connect delivery via auto_cache_recover",
              testCacheAutoRecoverFirstConnect},
             {"cache: auto_cache_recover on empty channel", testCacheAutoRecoverEmpty},
+            {"callbacks: disconnect from onSubscribing", testDisconnectFromSubscribing},
     };
     auto failed = 0;
     for (auto const &[name, test] : tests) {

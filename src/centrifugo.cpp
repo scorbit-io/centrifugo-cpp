@@ -96,17 +96,21 @@ public:
                 auto const [stateIt, inserted] = serverSubscriptions_.try_emplace(channel);
                 auto &state = stateIt->second;
                 state.recoverable = subResult.recoverable;
-                // An empty epoch must not stomp a known one.
+                // Epoch and offset are one position: a reply without an epoch must not stomp
+                // a known one, nor pair it with an offset from a different stream.
                 if (!subResult.epoch.empty() || state.epoch.empty()) {
                     state.epoch = subResult.epoch;
-                }
-                // With publications, handleServerPublication() advances the offset.
-                if (subResult.publications.empty()) {
-                    state.offset = subResult.offset;
+                    // With publications, handleServerPublication() advances the offset.
+                    if (subResult.publications.empty()) {
+                        state.offset = subResult.offset;
+                    }
                 }
 
                 if (inserted && onSubscribing_) {
                     onSubscribing_(channel);
+                    if (transport_.state() != ConnectionState::Connected) {
+                        return;
+                    }
                 }
                 if (continuityLost(channel, subResult) && logHandler_) {
                     logHandler_(LogEntry {LogLevel::Error,
@@ -268,6 +272,9 @@ private:
                                         .second;
                         if (inserted && onSubscribing_) {
                             onSubscribing_(push.channel);
+                            if (transport_.state() != ConnectionState::Connected) {
+                                return;
+                            }
                         }
                         if (onSubscribed_) {
                             onSubscribed_(push.channel);

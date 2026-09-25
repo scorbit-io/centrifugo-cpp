@@ -333,6 +333,10 @@ auto Transport::read() -> void
                     errorSignal_(Error {ErrorType::TransportError,
                                         std::string {"json parse error: "} + e.what()});
                 }
+                // A callback disconnected: a read on the closed socket would fail and reconnect.
+                if (state_ == ConnectionState::Disconnected) {
+                    return;
+                }
             }
 
             read();
