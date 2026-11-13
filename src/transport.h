@@ -120,6 +120,11 @@ private:
             return;
 
         state_ = newState;
+        if (state_ != ConnectionState::Connected) {
+            // Unsent commands belong to the lost connection; a new one starts with connect.
+            pendingWrites_.clear();
+            pendingCommands_.clear();
+        }
         if constexpr ((std::is_same_v<std::decay_t<Args>, Error> && ...)) {
             if (state_ == ConnectionState::Connecting) {
                 connectingSignal_(std::forward<Args>(args)...);

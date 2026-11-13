@@ -174,7 +174,12 @@ public:
                 client_.disconnect();
             }
         });
-        client_.onConnected([this] { update([this] { connected_ = true; }); });
+        client_.onConnected([this] {
+            update([this] {
+                connected_ = true;
+                ++connectedCount_;
+            });
+        });
         client_.onDisconnected([this](centrifugo::Error const &) {
             update([this] {
                 connected_ = false;
@@ -251,6 +256,34 @@ public:
         update([this] { disconnectOnUnsubscribed_ = true; });
     }
 
+    // Client-level publish on the strand. Records the code publish() returned (0: sent) and each
+    // result callback's code (0: accepted); disconnectAfter calls disconnect() right after.
+    auto clientPublish(std::string const &channel, json const &data, bool disconnectAfter = false)
+            -> void
+    {
+        net::post(strand_, [this, channel, data, disconnectAfter] {
+            publishRecorded(channel, data);
+            if (disconnectAfter) {
+                client_.disconnect();
+            }
+        });
+    }
+
+    // Publishes big, then, while its write is still in flight, small, then disconnects: small is
+    // left queued behind an interrupted write.
+    auto publishDuringWriteThenDisconnect(std::string const &channel, json const &big,
+                                          json const &small) -> void
+    {
+        net::post(strand_, [this, channel, big, small] {
+            publishRecorded(channel, big);
+            // Queued behind the flush that publish posted, so the big write has started.
+            net::post(strand_, [this, channel, small] {
+                publishRecorded(channel, small);
+                client_.disconnect();
+            });
+        });
+    }
+
     auto waitFor(std::string const &what, std::function<bool()> const &pred) -> bool
     {
         auto lock = std::unique_lock {mutex_};
@@ -277,14 +310,31 @@ public:
     auto tokenCalls() -> int { return snapshot(&Harness::tokenCalls_); }
     auto subscribed() -> int { return snapshot(&Harness::subscribedCount_); }
     auto unsubscribed() -> int { return snapshot(&Harness::unsubscribedCount_); }
+    auto publishSendCodes() -> std::vector<int> { return snapshot(&Harness::publishSendCodes_); }
+    auto publishResults() -> std::vector<int> { return snapshot(&Harness::publishResults_); }
 
     // Only for waitFor predicates, which run with the lock held.
     auto receivedCount() const -> std::size_t { return received_.size(); }
+    auto publishResultCount() const -> std::size_t { return publishResults_.size(); }
+    auto publishSendCount() const -> std::size_t { return publishSendCodes_.size(); }
     auto subscribedCount() const -> int { return subscribedCount_; }
     auto disconnectedCount() const -> int { return disconnectedCount_; }
+    auto connectedCount() const -> int { return connectedCount_; }
     auto connected() const -> bool { return connected_; }
 
 private:
+    auto publishRecorded(std::string const &channel, json const &data) -> void
+    {
+        auto const res = client_.publish(channel, data, [this](auto const &r) {
+            update([this, code = r ? 0 : r.error().ec.value()] {
+                publishResults_.push_back(code);
+            });
+        });
+        update([this, code = res ? 0 : res.error().ec.value()] {
+            publishSendCodes_.push_back(code);
+        });
+    }
+
     auto makeConfig() -> centrifugo::ClientConfig
     {
         auto config = centrifugo::ClientConfig {};
@@ -355,12 +405,15 @@ private:
     int subscribedCount_ {0};
     int unsubscribedCount_ {0};
     int disconnectedCount_ {0};
+    int connectedCount_ {0};
     int notRecoveredLogs_ {0};
     int tokenCalls_ {0};
     std::vector<std::string> received_;
     std::vector<std::uint64_t> offsets_;
     std::vector<int> errorCodes_;
     std::vector<json> connectSubs_;
+    std::vector<int> publishSendCodes_;
+    std::vector<int> publishResults_;
 };
 
 auto expectEq(std::vector<std::string> const &actual, std::vector<std::string> const &expected,
@@ -642,6 +695,201 @@ auto testDisconnectFromUnsubscribed() -> bool
     return true;
 }
 
+auto expectCodes(std::vector<int> const &actual, std::vector<int> const &expected,
+                 std::string const &what) -> bool
+{
+    auto toStrings = [](std::vector<int> const &v) {
+        auto out = std::vector<std::string> {};
+        for (auto const i : v) {
+            out.push_back(std::to_string(i));
+        }
+        return out;
+    };
+    return expectEq(toStrings(actual), toStrings(expected), what);
+}
+
+auto lastHistorySeq(std::string const &channel) -> std::string
+{
+    auto const res =
+            httpRequest(http::verb::post, CENTRIFUGO_PORT, "/api/history",
+                        json {{"channel", channel}, {"limit", 1}, {"reverse", true}}.dump());
+    auto const reply = res ? json::parse(*res, nullptr, false) : json {};
+    auto const pubs =
+            reply.is_object()
+                    ? reply.value("result", json::object()).value("publications", json::array())
+                    : json::array();
+    return pubs.empty() ? std::string {} : pubs[0].value("data", json::object()).value("seq", "");
+}
+
+// Publishes from a connected client to a channel it isn't subscribed to; expects one result.
+auto runClientPublish(std::string const &channel, std::vector<int> const &expected) -> bool
+{
+    auto h = Harness {"stream:" + uniqueSuffix()};
+    h.connect();
+    if (!h.waitFor("connect", [&] { return h.connected(); })) {
+        return false;
+    }
+    h.clientPublish(channel, {{"seq", "P"}});
+    if (!h.waitFor("publish result", [&] { return h.publishResultCount() >= 1; })) {
+        return false;
+    }
+    settle();
+    return expectCodes(h.publishSendCodes(), {0}, "publish() return")
+        && expectCodes(h.publishResults(), expected, "publish results (exactly once)");
+}
+
+auto testPublishAccepted() -> bool
+{
+    auto const channel = "pub:" + uniqueSuffix();
+    if (!runClientPublish(channel, {0})) {
+        return false;
+    }
+    return expectEq({lastHistorySeq(channel)}, {"P"}, "published data in history");
+}
+
+// No publish permission in the namespace: Centrifugo refuses with 103.
+auto testPublishRefused() -> bool
+{
+    return runClientPublish("stream:" + uniqueSuffix(), {103});
+}
+
+// A failing publish proxy reaches the client as code 100 (temporary); it is not retried.
+auto testPublishProxyFailure() -> bool
+{
+    return runClientPublish("proxied:" + uniqueSuffix(), {100});
+}
+
+auto testPublishNotConnected() -> bool
+{
+    auto h = Harness {"stream:" + uniqueSuffix()};
+    h.clientPublish("pub:" + uniqueSuffix(), {{"seq", "P"}});
+    if (!h.waitFor("publish() return", [&] { return h.publishSendCount() >= 1; })) {
+        return false;
+    }
+    settle();
+    auto const notConnected = static_cast<int>(centrifugo::ErrorType::NotConnected);
+    return expectCodes(h.publishSendCodes(), {notConnected}, "publish() return")
+        && expectCodes(h.publishResults(), {}, "no result callback");
+}
+
+// Disconnect before the publish goes out: the callback fails once and the publish is dropped,
+// not sent by a later connection.
+auto testPublishDisconnectBeforeSend() -> bool
+{
+    auto const channel = "pub:" + uniqueSuffix();
+    auto h = Harness {"stream:" + uniqueSuffix()};
+    h.connect();
+    if (!h.waitFor("connect", [&] { return h.connected(); })) {
+        return false;
+    }
+    h.clientPublish(channel, {{"seq", "P"}}, true);
+    if (!h.waitFor("publish result", [&] { return h.publishResultCount() >= 1; })) {
+        return false;
+    }
+    h.connect();
+    if (!h.waitFor("reconnect", [&] { return h.connectedCount() >= 2; })) {
+        return false;
+    }
+    settle();
+    auto const notConnected = static_cast<int>(centrifugo::ErrorType::NotConnected);
+    return expectCodes(h.publishSendCodes(), {0}, "publish() return")
+        && expectCodes(h.publishResults(), {notConnected}, "publish results (exactly once)")
+        && expectEq({lastHistorySeq(channel)}, {""}, "nothing published");
+}
+
+// A publish still queued when the connection drops is dropped with it: the next connection
+// must start with connect, not send a publish already reported as failed.
+auto testPublishQueuedAcrossDisconnect() -> bool
+{
+    auto const channel = "pub:" + uniqueSuffix();
+    auto h = Harness {"stream:" + uniqueSuffix()};
+    h.connect();
+    if (!h.waitFor("connect", [&] { return h.connected(); })) {
+        return false;
+    }
+    h.publishDuringWriteThenDisconnect(
+            channel, {{"seq", "BIG"}, {"pad", std::string(8 << 20, 'x')}}, {{"seq", "S"}});
+    if (!h.waitFor("publish results", [&] { return h.publishResultCount() >= 2; })) {
+        return false;
+    }
+    h.connect();
+    if (!h.waitFor("reconnect", [&] { return h.connectedCount() >= 2; })) {
+        return false;
+    }
+    settle();
+    auto const notConnected = static_cast<int>(centrifugo::ErrorType::NotConnected);
+    return expectCodes(h.publishResults(), {notConnected, notConnected}, "publish results")
+        && expectEq({lastHistorySeq(channel)}, {""}, "nothing published")
+        && h.waitFor("still connected", [&] { return h.connected(); });
+}
+
+// The connection drops while the server holds the reply (slow proxy): the callback fails once,
+// the client reconnects, and the old connection's reply never runs it again.
+auto testPublishReconnectWhileWaiting() -> bool
+{
+    auto h = Harness {"stream:" + uniqueSuffix()};
+    h.connect();
+    if (!h.waitFor("connect", [&] { return h.connected(); })) {
+        return false;
+    }
+    h.clientPublish("proxied:slow" + uniqueSuffix(), {{"seq", "P"}});
+    if (!h.waitFor("publish sent", [&] { return h.publishSendCount() >= 1; })) {
+        return false;
+    }
+    std::this_thread::sleep_for(500ms); // the proxy now holds the reply for 3 s
+    if (!apiDisconnect(h.user(), RECONNECT_CODE)
+        || !h.waitFor("publish result", [&] { return h.publishResultCount() >= 1; })
+        || !h.waitFor("reconnect", [&] { return h.connectedCount() >= 2; })) {
+        return false;
+    }
+    std::this_thread::sleep_for(4s); // past the stalled reply
+    auto const notConnected = static_cast<int>(centrifugo::ErrorType::NotConnected);
+    return expectCodes(h.publishSendCodes(), {0}, "publish() return")
+        && expectCodes(h.publishResults(), {notConnected}, "publish results (exactly once)");
+}
+
+// Destroying the client with a publish in flight runs its callback once, with a failure.
+auto testPublishClientDestroyed() -> bool
+{
+    auto ioc = net::io_context {};
+    auto strand = net::make_strand(ioc);
+    auto config = centrifugo::ClientConfig {};
+    config.getToken = []() -> outcome::result<std::string> {
+        auto const token = httpRequest(http::verb::get, JWT_PORT,
+                                       "/token/rt-" + uniqueSuffix() + "?seconds=300");
+        if (!token) {
+            return std::make_error_code(std::errc::connection_refused);
+        }
+        return *token;
+    };
+    auto client = std::make_unique<centrifugo::Client>(
+            strand, "ws://127.0.0.1:" + CENTRIFUGO_PORT + "/connection/websocket", config);
+    auto results = std::vector<int> {};
+    client->onConnected([&] {
+        // Same handler: the reply cannot arrive before the client is gone.
+        auto const res =
+                client->publish("pub:" + uniqueSuffix(), {{"seq", "P"}}, [&](auto const &r) {
+                    results.push_back(r ? 0 : r.error().ec.value());
+                });
+        if (!res) {
+            results.push_back(-1);
+        }
+        // Stopped with it: the transport's outstanding handlers must never run on a dead client.
+        net::post(strand, [&] {
+            client.reset();
+            ioc.stop();
+        });
+    });
+    net::post(strand, [&] {
+        if (!client->connect()) {
+            results.push_back(-2);
+        }
+    });
+    ioc.run_for(WAIT_TIMEOUT);
+    auto const notConnected = static_cast<int>(centrifugo::ErrorType::NotConnected);
+    return expectEq({client ? "alive" : "destroyed"}, {"destroyed"}, "client")
+        && expectCodes(results, {notConnected}, "publish results (exactly once)");
+}
 }
 
 auto main() -> int
@@ -659,6 +907,15 @@ auto main() -> int
             {"cache: auto_cache_recover on empty channel", testCacheAutoRecoverEmpty},
             {"callbacks: disconnect from onSubscribing", testDisconnectFromSubscribing},
             {"callbacks: disconnect from onUnsubscribed", testDisconnectFromUnsubscribed},
+            {"publish: accepted without a subscription", testPublishAccepted},
+            {"publish: refused by permissions (103)", testPublishRefused},
+            {"publish: failed publish proxy (100)", testPublishProxyFailure},
+            {"publish: not connected", testPublishNotConnected},
+            {"publish: disconnect before it is sent", testPublishDisconnectBeforeSend},
+            {"publish: queued publish dropped with the connection",
+             testPublishQueuedAcrossDisconnect},
+            {"publish: connection drops before the reply", testPublishReconnectWhileWaiting},
+            {"publish: client destroyed before the reply", testPublishClientDestroyed},
     };
     auto failed = 0;
     for (auto const &[name, test] : tests) {

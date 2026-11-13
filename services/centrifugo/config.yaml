@@ -29,6 +29,18 @@ channel:
       history_ttl: "300s"
       force_recovery: true
       force_recovery_mode: "cache"
+    # Used by tests/recovery_test.cpp for client-level publish (no subscription).
+    - name: "pub"
+      allow_publish_for_client: true
+      history_size: 1
+      history_ttl: "300s"
+    # Publish proxy that always fails: Centrifugo answers code 100, temporary.
+    - name: "proxied"
+      publish_proxy_enabled: true
+  proxy:
+    publish:
+      endpoint: "http://jwt-generator:3001/publish-proxy"
+      timeout: "10s"
 
 http_api:
   key: "api-key"

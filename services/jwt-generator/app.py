@@ -25,6 +25,14 @@ def get_token(user):
     return token
 
 
+@app.route("/publish-proxy", methods=["POST"])
+def publish_proxy():
+    # Always fails (Centrifugo answers code 100); a "slow" channel first stalls the reply.
+    if "slow" in (request.get_json(silent=True) or {}).get("channel", ""):
+        time.sleep(3)
+    return "proxy failure", 500
+
+
 if __name__ == "__main__":
     print("JWT Generator running on http://0.0.0.0:3001")
     print("Usage: http://localhost:3001/token/test-user?seconds=300")
