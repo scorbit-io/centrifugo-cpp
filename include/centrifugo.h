@@ -38,9 +38,11 @@ public:
     // Client-level publish to any channel; the server (or its publish proxy) decides. An error
     // returned here means nothing was sent and onResult never runs. Otherwise onResult runs
     // exactly once, later, on the strand: success when the server accepts, the server's error
-    // when it refuses, and a failure if the connection drops or the client is destroyed first.
-    // Never retried. When the client is destroyed, onResult runs inside ~Client, so it must not
-    // touch the client or anything its owner has already destroyed.
+    // when it refuses, and NotConnected if the connection drops first. A reply that itself
+    // replaces the connection (token expired, 109) also completes as NotConnected. Never retried.
+    // Exception: a publish still pending when the client is destroyed completes inside ~Client,
+    // on the destroying thread. Destroy the client on its strand to keep the strand guarantee,
+    // and don't touch the client or anything its owner has already destroyed from onResult.
     auto publish(std::string const &channel, nlohmann::json const &data,
                  PublishResultCallback onResult) -> outcome::result<void, Error>;
 
