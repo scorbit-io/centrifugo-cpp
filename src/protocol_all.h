@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <optional>
 #include <string>
 #include <cstdint>
@@ -173,7 +174,8 @@ auto from_json(nlohmann::json const &j, Reply &reply) -> void;
 
 inline auto makeCommand(Command::RequestType &&req) -> Command
 {
-    static auto commandId = 0u;
+    // Shared by every client, which may run on different threads.
+    static auto commandId = std::atomic<std::uint32_t> {0};
     auto cmd = Command {};
     cmd.id = ++commandId;
     cmd.request = std::move(req);

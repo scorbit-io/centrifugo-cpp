@@ -31,6 +31,17 @@ public:
         , transport_ {strand, std::move(url), std::move(config)}
     {
         transport_.onReplyReceived().connect([this](Reply const &reply) {
+            if (auto const it = pendingPublishes_.find(reply.id); it != pendingPublishes_.end()) {
+                auto onResult = std::move(it->second);
+                pendingPublishes_.erase(it);
+                if (auto const *const err = std::get_if<ErrorReply>(&reply.result)) {
+                    onResult(Error {static_cast<ErrorType>(err->code), err->message});
+                } else {
+                    onResult(outcome::success());
+                }
+                return;
+            }
+
             for (auto &[channel, subscription] : subscriptions_) {
                 if (subscription.handleReply(reply)) {
                     return;
@@ -67,6 +78,8 @@ public:
         });
 
         transport_.onConnecting().connect([this](auto const &) {
+            // A reply never crosses connections.
+            failPendingPublishes("connection lost before the publish reply");
             if (onSubscribing_) {
                 for (auto const &[chan, _] : serverSubscriptions_) {
                     onSubscribing_(chan);
@@ -140,6 +153,7 @@ public:
         });
 
         transport_.onDisconnected().connect([this](Error const &error) {
+            failPendingPublishes("disconnected before the publish reply");
             if (onUnsubscribed_) {
                 for (auto const &[chan, _] : serverSubscriptions_) {
                     onUnsubscribed_(chan);
@@ -153,6 +167,11 @@ public:
             }
         });
     }
+
+    ~Impl() { failPendingPublishes("client destroyed before the publish reply"); }
+
+    Impl(Impl const &) = delete;
+    auto operator=(Impl const &) -> Impl & = delete;
 
     auto transport() -> Transport & { return transport_; }
 
@@ -230,6 +249,19 @@ public:
         }
 
         transport_.send(makeCommand(PublishRequest {channel, data}));
+        return outcome::success();
+    }
+
+    auto publish(std::string const &channel, nlohmann::json const &data,
+                 PublishResultCallback onResult) -> outcome::result<void, Error>
+    {
+        if (transport_.state() != ConnectionState::Connected) {
+            return Error {ErrorType::NotConnected, "not connected"};
+        }
+
+        auto cmd = makeCommand(PublishRequest {channel, data});
+        pendingPublishes_.emplace(cmd.id, std::move(onResult));
+        transport_.send(std::move(cmd));
         return outcome::success();
     }
 
@@ -318,6 +350,16 @@ private:
         }
     }
 
+    auto failPendingPublishes(std::string const &reason) -> void
+    {
+        // Swapped out first, since a callback may publish again.
+        auto pending = std::unordered_map<std::uint32_t, PublishResultCallback> {};
+        std::swap(pending, pendingPublishes_);
+        for (auto &[id, onResult] : pending) {
+            onResult(Error {ErrorType::NotConnected, reason});
+        }
+    }
+
     auto sendSubscribeCmd(std::string const &channel) -> void
     {
         auto req = SubscribeRequest {};
@@ -338,6 +380,8 @@ private:
     std::unordered_map<std::string, ServerSubState> serverSubscriptions_;
     // Server-side channel -> epoch sent with the last connect command.
     std::unordered_map<std::string, std::string> recoveryRequested_;
+    // Command id -> result callback of a client-level publish awaiting its reply.
+    std::unordered_map<std::uint32_t, PublishResultCallback> pendingPublishes_;
 
     std::function<void(std::string const &)> onSubscribing_;
     std::function<void(std::string const &)> onSubscribed_;
@@ -446,6 +490,12 @@ auto Client::publish(std::string const &channel, nlohmann::json const &data)
         -> outcome::result<void, Error>
 {
     return pImpl->publish(channel, data);
+}
+
+auto Client::publish(std::string const &channel, nlohmann::json const &data,
+                     PublishResultCallback onResult) -> outcome::result<void, Error>
+{
+    return pImpl->publish(channel, data, std::move(onResult));
 }
 
 auto Client::send(nlohmann::json const &data) -> outcome::result<void, Error>
