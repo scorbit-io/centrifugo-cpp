@@ -34,6 +34,12 @@ auto Subscription::publish(nlohmann::json const &json) -> outcome::result<void, 
     return impl->publish(json);
 }
 
+auto Subscription::history(HistoryOptions const &options, HistoryCallback onResult)
+        -> outcome::result<void, Error>
+{
+    return impl->history(options, std::move(onResult));
+}
+
 auto Subscription::onSubscribing(std::function<void()> callback) -> void
 {
     impl->onSubscribing().connect(callback);

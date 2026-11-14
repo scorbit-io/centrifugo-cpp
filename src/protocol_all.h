@@ -59,6 +59,18 @@ struct SendRequest {
     nlohmann::json data;
 };
 
+struct HistoryRequest {
+    std::string channel;
+    std::int32_t limit {0};
+    std::optional<StreamPosition> since;
+    bool reverse {false};
+};
+
+struct SubRefreshRequest {
+    std::string channel;
+    std::string token;
+};
+
 struct SubscribeResult {
     bool expires {false};
     std::uint32_t ttl {0};
@@ -105,6 +117,11 @@ struct RefreshResult {
 struct SendResult {
 };
 
+struct SubRefreshResult {
+    bool expires {false};
+    std::uint32_t ttl {0};
+};
+
 struct Subscribe {
     bool recoverable {false};
     std::string epoch;
@@ -132,16 +149,19 @@ struct ErrorReply {
 };
 
 struct Command {
-    using RequestType = std::variant<ConnectRequest, SubscribeRequest, UnsubscribeRequest,
-                                     PublishRequest, RefreshRequest, SendRequest>;
+    using RequestType =
+            std::variant<ConnectRequest, SubscribeRequest, UnsubscribeRequest, PublishRequest,
+                         RefreshRequest, SendRequest, HistoryRequest, SubRefreshRequest>;
 
     std::uint32_t id;
     RequestType request;
 };
 
 struct Reply {
-    using ResultType = std::variant<ConnectResult, SubscribeResult, UnsubscribeResult,
-                                    PublishResult, RefreshResult, SendResult, Push, ErrorReply>;
+    using ResultType =
+            std::variant<ConnectResult, SubscribeResult, UnsubscribeResult, PublishResult,
+                         RefreshResult, SendResult, HistoryResult, SubRefreshResult, Push,
+                         ErrorReply>;
 
     std::uint32_t id;
     ResultType result;
@@ -154,6 +174,9 @@ auto to_json(nlohmann::json &j, UnsubscribeRequest const &req) -> void;
 auto to_json(nlohmann::json &j, PublishRequest const &req) -> void;
 auto to_json(nlohmann::json &j, RefreshRequest const &req) -> void;
 auto to_json(nlohmann::json &j, SendRequest const &req) -> void;
+auto to_json(nlohmann::json &j, StreamPosition const &pos) -> void;
+auto to_json(nlohmann::json &j, HistoryRequest const &req) -> void;
+auto to_json(nlohmann::json &j, SubRefreshRequest const &req) -> void;
 
 auto from_json(nlohmann::json const &j, ConnectResult &result) -> void;
 auto from_json(nlohmann::json const &j, SubscribeResult &result) -> void;
@@ -161,6 +184,8 @@ auto from_json(nlohmann::json const &j, UnsubscribeResult &result) -> void;
 auto from_json(nlohmann::json const &j, PublishResult &result) -> void;
 auto from_json(nlohmann::json const &j, RefreshResult &result) -> void;
 auto from_json(nlohmann::json const &j, SendResult &result) -> void;
+auto from_json(nlohmann::json const &j, HistoryResult &result) -> void;
+auto from_json(nlohmann::json const &j, SubRefreshResult &result) -> void;
 
 auto from_json(nlohmann::json const &j, ClientInfo &info) -> void;
 auto from_json(nlohmann::json const &j, Publication &pub) -> void;

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <string>
 #include <system_error>
 
 namespace centrifugo {
@@ -32,6 +33,17 @@ enum class ErrorType {
 };
 
 auto make_error_code(ErrorType e) -> std::error_code;
+
+// Boost.Outcome hooks: let `result<T, Error>::value()` throw std::system_error on failure.
+inline auto make_error_code(Error const &e) -> std::error_code
+{
+    return e.ec;
+}
+
+inline auto outcome_throw_as_system_error_with_payload(Error const &e) -> void
+{
+    throw std::system_error {e.ec, e.message};
+}
 
 }
 

@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # Bring up Centrifugo + jwt-generator in a private compose project on free localhost ports,
-# run the integration tests, tear down. Usage: tests/run_integration.sh [build-dir]
+# run the integration tests, tear down.
+# Usage: tests/run_integration.sh [build-dir] [name-filter]
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
 build_dir="$(cd "${1:-$root/build}" && pwd)"
+filter="${2:-}"
 test_bin="$build_dir/recovery_test"
 
 if [[ ! -x "$test_bin" ]]; then
@@ -40,4 +42,4 @@ if [[ -z "${ready:-}" ]]; then
     exit 1
 fi
 
-"$test_bin"
+"$test_bin" "$filter"

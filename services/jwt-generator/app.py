@@ -25,6 +25,14 @@ def get_token(user):
     return token
 
 
+@app.route("/sub-token/<user>")
+def get_sub_token(user):
+    # Subscription token for one channel: /sub-token/user?channel=live:x&seconds=60
+    seconds = int(request.args.get("seconds", 3600))
+    claims = {"sub": user, "channel": request.args["channel"], "exp": int(time.time()) + seconds}
+    return jwt.encode(claims, SECRET, algorithm="HS256")
+
+
 @app.route("/publish-proxy", methods=["POST"])
 def publish_proxy():
     # Always fails (Centrifugo answers code 100); a "slow" channel first stalls the reply.
