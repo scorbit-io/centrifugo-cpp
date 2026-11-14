@@ -55,7 +55,7 @@ Transport::Transport(net::strand<net::io_context::executor_type> const &strand, 
     , pingTimer_ {strand}
     , tokenRefreshTimer_ {strand}
     , rng_ {std::random_device {}()}
-    , token_ {config.token}
+    , token_ {config_.token} // config was moved into config_ above
 {
     connectingSignal_.connect([this](auto const &) { reconnectAttempts_ = 0; });
 
@@ -152,6 +152,10 @@ auto Transport::send(json const &j, Command &&cmd) -> void
     }
 
     if (cmd.id != 0) {
+        if (std::holds_alternative<ConnectRequest>(cmd.request)
+            || std::holds_alternative<RefreshRequest>(cmd.request)) {
+            connectionCommands_.insert(cmd.id);
+        }
         pendingCommands_.push_back(std::move(cmd));
     }
 
@@ -358,11 +362,13 @@ auto Transport::handleReceivedMsg(json const &json) -> void
     try {
         auto const reply = json.get<Reply>();
         std::visit(
-                [this](auto const &result) {
+                [this, &reply](auto const &result) {
                     using ResultType = std::decay_t<decltype(result)>;
 
                     if constexpr (std::is_same_v<ResultType, ErrorReply>) {
-                        if (static_cast<ErrorType>(result.code) == ErrorType::TokenExpired) {
+                        // A subscription token's 109 belongs to that subscription.
+                        if (static_cast<ErrorType>(result.code) == ErrorType::TokenExpired
+                            && connectionCommands_.count(reply.id) != 0) {
                             token_ = std::string {};
                             closeConnection();
                             reconnect();
@@ -379,6 +385,7 @@ auto Transport::handleReceivedMsg(json const &json) -> void
 
         replyReceivedSignal_(reply);
         sentCommands_.erase(reply.id);
+        connectionCommands_.erase(reply.id);
     } catch (std::exception const &e) {
         errorSignal_(Error {ErrorType::TransportError, std::string {"error processing reply: "}
                                                                + e.what() + ", " + json.dump()});

@@ -3,6 +3,7 @@
 #include <chrono>
 #include <optional>
 #include <random>
+#include <unordered_set>
 #include <variant>
 #include <vector>
 
@@ -60,6 +61,8 @@ public:
               ClientConfig &&config);
 
     auto state() const -> ConnectionState;
+    auto config() const -> ClientConfig const & { return config_; }
+    auto executor() -> net::any_io_executor { return resolver_.get_executor(); }
     auto sentCommands() const -> std::unordered_map<std::uint32_t, Command> const &;
 
     auto initialConnect() -> outcome::result<void, Error>;
@@ -124,6 +127,7 @@ private:
             // Unsent commands belong to the lost connection; a new one starts with connect.
             pendingWrites_.clear();
             pendingCommands_.clear();
+            connectionCommands_.clear();
         }
         if constexpr ((std::is_same_v<std::decay_t<Args>, Error> && ...)) {
             if (state_ == ConnectionState::Connecting) {
@@ -172,6 +176,8 @@ private:
     chrono::seconds pingInterval_;
     std::uint32_t reconnectAttempts_ = 0;
     std::unordered_map<std::uint32_t, Command> sentCommands_;
+    // Ids of connect and refresh commands: only their 109 replies mean the connection token.
+    std::unordered_set<std::uint32_t> connectionCommands_;
     std::string token_;
 
     // deferred writes

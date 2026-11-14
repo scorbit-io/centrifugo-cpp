@@ -7,6 +7,8 @@ A modern C++17 client library for [Centrifugo](https://github.com/centrifugal/ce
 - 🚀 **Asynchronous I/O** - Built on Boost.Asio for high-performance networking
 - 🔐 **JWT Authentication** - Full support for JWT token-based authentication
 - 📡 **Real-time Subscriptions** - Subscribe to channels and receive publications
+- 🎟️ **Subscription Tokens** - Closed channels via per-channel tokens, refreshed before expiry
+- 🕘 **History** - Read a channel's retained publications
 - 🔄 **Automatic Reconnection** - Configurable reconnection logic with exponential backoff
 - 📝 **Modern C++17** - Clean, type-safe API using modern C++ features
 - 🛡️ **Error Handling** - Comprehensive error handling with boost::outcome
@@ -65,7 +67,8 @@ docker compose up -d # Starts Centrifugo server and JWT generator service to be 
 
 `tests/recovery_test.cpp` checks history recovery for server-side subscriptions (channels granted
 by the connection token) against a real Centrifugo (`stream:`, `cache:` and `cachec:` namespaces in
-`services/centrifugo/config.yaml`), including server-forced reconnects and token expiry. It needs
+`services/centrifugo/config.yaml`), including server-forced reconnects and token expiry, plus
+subscription tokens and history on a closed `live:` namespace. It needs
 Docker and is built only in a top-level build (CTest label `integration`):
 
 ```bash
@@ -81,6 +84,44 @@ reconnect. For those channels, `onSubscribed` and any recovered `onPublication` 
 **before** `onConnected`. If the server cannot recover a gap, the client logs a
 `LogLevel::Error` entry ("server-side subscription not recovered"); publications may have been
 missed. Handlers should be idempotent.
+
+## Subscription Tokens and History
+
+Channels the server does not open to every client (`allow_subscribe_for_client: false`) need a
+subscription token. Pass a `SubscriptionConfig`:
+
+```cpp
+auto config = centrifugo::SubscriptionConfig {};
+config.getToken = [](std::string const &channel) -> outcome::result<std::string> {
+    return fetchSubscriptionToken(channel); // your backend; runs on the client's strand
+};
+auto sub = client.newSubscription("live_dmd:" + machineUuid, std::move(config));
+```
+
+- `token` is used for the first subscribe; `getToken` supplies the rest.
+- Tokens are refreshed before they expire (`sub_refresh`): at 3/4 of a short TTL, otherwise
+  `refreshTokenBeforeExpiry` ahead. A 60 s TTL refreshes after 45 s.
+- A token-expired reply (109) to subscribe is retried once with a fresh token. If `getToken`
+  fails, or the server refuses for good (e.g. 103), `onError` fires and the subscription ends
+  `UNSUBSCRIBED`, keeping its stream position for a later `subscribe()`.
+
+`Subscription::history()` reads retained publications, oldest first unless `reverse`:
+
+```cpp
+sub.history({10}, [](outcome::result<centrifugo::HistoryResult, centrifugo::Error> const &r) {
+    if (!r) { return; } // r.error(): server error, or NotConnected if the connection dropped
+    for (auto const &pub : r.value().publications) { /* ... */ }
+});
+```
+
+`limit` 0 returns only the stream position; `since` limits it to publications after one. The
+callback runs exactly once, on the client's strand; only a read still pending when the client is
+destroyed completes inside `~Client`, on that thread.
+
+Client-side subscriptions also follow the server: an `unsubscribe` push with code 2500 or above
+(e.g. an expired token) subscribes again from the kept position; a lower code ends the
+subscription. `unsubscribe()` takes effect at once, and `removeSubscription()` is safe from the
+subscription's own callbacks.
 
 ## Architecture
 

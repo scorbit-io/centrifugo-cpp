@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <functional>
+#include <future>
 #include <iostream>
 #include <mutex>
 #include <optional>
@@ -890,10 +891,550 @@ auto testPublishClientDestroyed() -> bool
     return expectEq({client ? "alive" : "destroyed"}, {"destroyed"}, "client")
         && expectCodes(results, {notConnected}, "publish results (exactly once)");
 }
+
+// ==== Client-side subscriptions with subscription tokens (namespace "live", closed) ====
+
+auto subToken(std::string const &user, std::string const &channel, int seconds) -> std::string
+{
+    return httpRequest(http::verb::get, JWT_PORT,
+                       "/sub-token/" + user + "?channel=" + channel + "&seconds="
+                               + std::to_string(seconds))
+            .value_or("");
 }
 
-auto main() -> int
+// One Client and one client-side subscription on its own io_context thread.
+class SubHarness
 {
+public:
+    // Query for the n-th subscription getToken call (1-based); empty: getToken fails.
+    using SubTokenParams = std::function<std::string(int call)>;
+
+    struct Options {
+        bool withToken {true};                    // configure a SubscriptionConfig at all
+        std::optional<int> initialTokenSeconds;   // SubscriptionConfig::token, signed for user
+        SubTokenParams subTokenParams;            // null: no getToken
+    };
+
+    SubHarness(std::string channel, Options options)
+        : channel_ {std::move(channel)}
+        , user_ {"st-" + uniqueSuffix()}
+        , options_ {std::move(options)}
+        , strand_ {net::make_strand(ioc_)}
+        , client_ {strand_, "ws://127.0.0.1:" + CENTRIFUGO_PORT + "/connection/websocket",
+                   makeConfig()}
+    {
+        client_.onConnected([this] { update([this] { ++connectedCount_; }); });
+        client_.onDisconnected([this](centrifugo::Error const &) {
+            update([this] { connected_ = false; });
+        });
+        client_.onConnected([this] { update([this] { connected_ = true; }); });
+
+        auto sub = options_.withToken ? client_.newSubscription(channel_, makeSubConfig())
+                                      : client_.newSubscription(channel_);
+        sub_ = &sub.value().get();
+        sub_->onSubscribed([this] { update([this] { ++subscribed_; }); });
+        sub_->onUnsubscribed([this] { update([this] { ++unsubscribed_; }); });
+        sub_->onError([this](centrifugo::Error const &e) {
+            update([this, e] { errors_.push_back(e.ec.value()); });
+        });
+        sub_->onPublication([this](centrifugo::Publication const &pub) {
+            update([this, pub] { received_.push_back(pub.data.value("seq", std::string {"?"})); });
+        });
+        thread_ = std::thread {[this] { ioc_.run(); }};
+    }
+
+    ~SubHarness()
+    {
+        onStrand([this] { client_.disconnect(); });
+        work_.reset();
+        ioc_.stop();
+        thread_.join();
+    }
+
+    SubHarness(SubHarness const &) = delete;
+    auto operator=(SubHarness const &) -> SubHarness & = delete;
+
+    auto user() const -> std::string const & { return user_; }
+
+    auto connectAndSubscribe() -> void
+    {
+        onStrand([this] {
+            (void)sub_->subscribe();
+            (void)client_.connect();
+        });
+    }
+
+    // Runs f on the strand and waits for it.
+    auto onStrand(std::function<void()> f) -> void
+    {
+        auto done = std::promise<void> {};
+        net::post(strand_, [&] {
+            f();
+            done.set_value();
+        });
+        done.get_future().wait();
+    }
+
+    // History read on the strand; records the outcome.
+    auto history(centrifugo::HistoryOptions const &options) -> void
+    {
+        onStrand([this, options] {
+            auto const res = sub_->history(options, [this](auto const &r) {
+                update([this, r] {
+                    historyResults_.push_back(r);
+                });
+            });
+            if (!res) {
+                update([this, code = res.error().ec.value()] { historySendCodes_.push_back(code); });
+            }
+        });
+    }
+
+    // History read, then, in the same strand turn, disconnect or remove the subscription: the
+    // read is in flight and must complete exactly once.
+    auto historyThen(bool remove) -> void
+    {
+        onStrand([this, remove] {
+            (void)sub_->history({10, std::nullopt, false}, [this](auto const &r) {
+                update([this, r] { historyResults_.push_back(r); });
+            });
+            if (remove) {
+                client_.removeSubscription(*sub_);
+                sub_ = nullptr;
+            } else {
+                client_.disconnect();
+            }
+        });
+    }
+
+    auto onStrandDisconnect() -> void
+    {
+        onStrand([this] { client_.disconnect(); });
+    }
+
+    auto reconnect() -> void
+    {
+        onStrand([this] { (void)client_.connect(); });
+    }
+
+    // Registered after the subscription's own handler, so it runs once subscribe was sent.
+    auto unsubscribeOnConnected() -> void
+    {
+        client_.onConnected([this] { sub_->unsubscribe(); });
+    }
+
+    auto state() -> centrifugo::SubscriptionState
+    {
+        auto s = centrifugo::SubscriptionState::UNSUBSCRIBED;
+        onStrand([&] { s = sub_->state(); });
+        return s;
+    }
+
+    auto waitFor(std::string const &what, std::function<bool()> const &pred,
+                 std::chrono::seconds timeout = WAIT_TIMEOUT) -> bool
+    {
+        auto lock = std::unique_lock {mutex_};
+        if (cv_.wait_for(lock, timeout, pred)) {
+            return true;
+        }
+        std::cerr << "  FAIL: timed out waiting for " << what << " (received " << fmt(received_)
+                  << ", errors " << errors_.size() << ", sub token calls " << subTokenCalls_
+                  << ")\n";
+        return false;
+    }
+
+    template<typename T>
+    auto snapshot(T SubHarness::*member) -> T
+    {
+        auto lock = std::lock_guard {mutex_};
+        return this->*member;
+    }
+
+    // For waitFor predicates (lock held).
+    int subscribed_ {0};
+    int unsubscribed_ {0};
+    int connectedCount_ {0};
+    bool connected_ {false};
+    int subTokenCalls_ {0};
+    std::vector<int> errors_;
+    std::vector<std::string> received_;
+    std::vector<std::string> sentSubscribeTokens_;
+    std::vector<bool> sentSubscribeRecover_;
+    std::vector<int> historySendCodes_;
+    std::vector<outcome::result<centrifugo::HistoryResult, centrifugo::Error>> historyResults_;
+
+private:
+    auto makeConfig() -> centrifugo::ClientConfig
+    {
+        auto config = centrifugo::ClientConfig {};
+        config.name = "sub-token-test";
+        config.getToken = [this]() -> outcome::result<std::string> {
+            auto const token = httpRequest(http::verb::get, JWT_PORT,
+                                           "/token/" + user_ + "?seconds=300&channels=none_"
+                                                   + user_);
+            if (!token) {
+                return std::make_error_code(std::errc::connection_refused);
+            }
+            return *token;
+        };
+        config.logHandler = [this](centrifugo::LogEntry const &entry) {
+            if (entry.message != "sending message") {
+                return;
+            }
+            auto lines = std::istringstream {entry.fields.value("message", std::string {})};
+            for (auto line = std::string {}; std::getline(lines, line);) {
+                auto const j = json::parse(line, nullptr, false);
+                if (j.is_object() && j.contains("subscribe")) {
+                    auto const &sub = j["subscribe"];
+                    update([this, t = sub.value("token", std::string {}),
+                            r = sub.value("recover", false)] {
+                        sentSubscribeTokens_.push_back(t);
+                        sentSubscribeRecover_.push_back(r);
+                    });
+                }
+            }
+        };
+        return config;
+    }
+
+    auto makeSubConfig() -> centrifugo::SubscriptionConfig
+    {
+        auto config = centrifugo::SubscriptionConfig {};
+        if (options_.initialTokenSeconds) {
+            config.token = subToken(user_, channel_, *options_.initialTokenSeconds);
+        }
+        if (options_.subTokenParams) {
+            config.getToken = [this](std::string const &channel) -> outcome::result<std::string> {
+                auto call = 0;
+                update([this, &call] { call = ++subTokenCalls_; });
+                auto const params = options_.subTokenParams(call);
+                if (params.empty()) {
+                    return std::make_error_code(std::errc::permission_denied);
+                }
+                auto const token = httpRequest(http::verb::get, JWT_PORT,
+                                               "/sub-token/" + user_ + "?channel=" + channel + "&"
+                                                       + params);
+                if (!token) {
+                    return std::make_error_code(std::errc::connection_refused);
+                }
+                return *token;
+            };
+        }
+        return config;
+    }
+
+    template<typename F>
+    auto update(F &&f) -> void
+    {
+        {
+            auto lock = std::lock_guard {mutex_};
+            f();
+        }
+        cv_.notify_all();
+    }
+
+    std::string channel_;
+    std::string user_;
+    Options options_;
+    net::io_context ioc_;
+    net::executor_work_guard<net::io_context::executor_type> work_ {ioc_.get_executor()};
+    net::strand<net::io_context::executor_type> strand_;
+    centrifugo::Client client_;
+    centrifugo::Subscription *sub_ {nullptr};
+    std::thread thread_;
+    std::mutex mutex_;
+    std::condition_variable cv_;
+};
+
+auto liveChannel() -> std::string
+{
+    return "live:" + uniqueSuffix();
+}
+
+auto constexpr PERMISSION_DENIED = 103;
+
+// A closed namespace refuses a subscribe without a token (103), ending the subscription.
+auto testSubTokenMissing() -> bool
+{
+    auto h = SubHarness {liveChannel(), {false, std::nullopt, {}}};
+    h.connectAndSubscribe();
+    if (!h.waitFor("unsubscribed", [&] { return h.unsubscribed_ >= 1; })) {
+        return false;
+    }
+    return expectCodes(h.snapshot(&SubHarness::errors_), {PERMISSION_DENIED}, "subscribe errors")
+        && expectEq({h.state() == centrifugo::SubscriptionState::UNSUBSCRIBED ? "unsubscribed"
+                                                                              : "other"},
+                    {"unsubscribed"}, "state");
+}
+
+// getToken supplies the token; publications flow; the token went out with subscribe.
+auto testSubTokenSubscribe() -> bool
+{
+    auto const channel = liveChannel();
+    auto h = SubHarness {channel, {true, std::nullopt, [](int) { return std::string {"seconds=300"}; }}};
+    h.connectAndSubscribe();
+    if (!h.waitFor("subscribed", [&] { return h.subscribed_ >= 1; }) || !publish(channel, "P1")
+        || !h.waitFor("P1", [&] { return h.received_.size() >= 1; })) {
+        return false;
+    }
+    auto const tokens = h.snapshot(&SubHarness::sentSubscribeTokens_);
+    return expectEq({tokens.size() == 1 && !tokens[0].empty() ? "token sent" : "no token"},
+                    {"token sent"}, "subscribe token")
+        && expectCodes(h.snapshot(&SubHarness::errors_), {}, "errors");
+}
+
+// A static token that has already expired: the server answers 109, getToken gives a fresh one.
+auto testSubTokenExpiredRetried() -> bool
+{
+    auto h = SubHarness {liveChannel(),
+                         {true, -60, [](int) { return std::string {"seconds=300"}; }}};
+    h.connectAndSubscribe();
+    if (!h.waitFor("subscribed", [&] { return h.subscribed_ >= 1; })) {
+        return false;
+    }
+    settle();
+    // A subscription's 109 must not take the connection-token path (reconnect).
+    return expectCodes({h.snapshot(&SubHarness::subTokenCalls_)}, {1}, "sub getToken calls")
+        && expectCodes({static_cast<int>(h.snapshot(&SubHarness::sentSubscribeTokens_).size())},
+                       {2}, "subscribe commands sent")
+        && expectCodes({h.snapshot(&SubHarness::connectedCount_)}, {1}, "connections")
+        && expectCodes(h.snapshot(&SubHarness::errors_), {}, "errors");
+}
+
+// getToken fails: onError, then UNSUBSCRIBED, nothing sent.
+auto testSubTokenGetTokenFails() -> bool
+{
+    auto h = SubHarness {liveChannel(), {true, std::nullopt, [](int) { return std::string {}; }}};
+    h.connectAndSubscribe();
+    if (!h.waitFor("unsubscribed", [&] { return h.unsubscribed_ >= 1; })) {
+        return false;
+    }
+    auto const unauthorized = static_cast<int>(centrifugo::ErrorType::Unauthorized);
+    return expectCodes(h.snapshot(&SubHarness::errors_), {unauthorized}, "errors")
+        && expectCodes({static_cast<int>(h.snapshot(&SubHarness::sentSubscribeTokens_).size())},
+                       {0}, "subscribe commands sent");
+}
+
+// The live_dmd case: a 60 s subscription token is refreshed and the stream keeps flowing.
+auto testSubTokenSurvivesTtl() -> bool
+{
+    auto const channel = liveChannel();
+    auto h = SubHarness {channel, {true, std::nullopt, [](int) { return std::string {"seconds=60"}; }}};
+    h.connectAndSubscribe();
+    if (!h.waitFor("subscribed", [&] { return h.subscribed_ >= 1; })) {
+        return false;
+    }
+    // Past expiry plus the server's grace and check interval (see the control test below).
+    std::cout << "  waiting 120 s, past the 60 s token TTL and the server's grace period...\n";
+    std::this_thread::sleep_for(120s);
+    if (!publish(channel, "LATE") || !h.waitFor("LATE", [&] { return h.received_.size() >= 1; })) {
+        return false;
+    }
+    auto const calls = h.snapshot(&SubHarness::subTokenCalls_);
+    if (calls < 2) {
+        std::cerr << "  FAIL: expected a refresh getToken call, got " << calls << " call(s)\n";
+        return false;
+    }
+    return expectCodes({h.snapshot(&SubHarness::unsubscribed_)}, {0}, "unsubscribed events")
+        && expectCodes(h.snapshot(&SubHarness::errors_), {}, "errors");
+}
+
+// Recovery across a reconnect keeps working with a token subscription.
+auto testSubTokenRecoveryAcrossReconnect() -> bool
+{
+    auto const channel = liveChannel();
+    auto h = SubHarness {channel, {true, std::nullopt, [](int) { return std::string {"seconds=300"}; }}};
+    h.connectAndSubscribe();
+    if (!h.waitFor("subscribed", [&] { return h.subscribed_ >= 1; }) || !publish(channel, "P1")
+        || !h.waitFor("P1", [&] { return h.received_.size() >= 1; })) {
+        return false;
+    }
+    // Published while disconnected, so P2 can only arrive through recovery.
+    h.onStrandDisconnect();
+    if (!h.waitFor("disconnect", [&] { return !h.connected_; }) || !publish(channel, "P2")) {
+        return false;
+    }
+    h.reconnect();
+    if (!h.waitFor("resubscribe", [&] { return h.subscribed_ >= 2; })
+        || !h.waitFor("P2", [&] { return h.received_.size() >= 2; })) {
+        return false;
+    }
+    settle();
+    auto const tokens = h.snapshot(&SubHarness::sentSubscribeTokens_);
+    auto const recover = h.snapshot(&SubHarness::sentSubscribeRecover_);
+    return expectEq(h.snapshot(&SubHarness::received_), {"P1", "P2"}, "recovered stream")
+        && expectEq({recover.size() == 2 && !recover[0] && recover[1] ? "recover on resubscribe"
+                                                                      : "no recover"},
+                    {"recover on resubscribe"}, "resubscribe recover flag")
+        && expectEq({tokens.size() == 2 && !tokens[1].empty() ? "token on resubscribe" : "none"},
+                    {"token on resubscribe"}, "resubscribe token");
+}
+
+// Control for the TTL test: a 5 s static token, never refreshed. The server unsubscribes it
+// once its grace period ends (on its ~27 s presence tick, after 25 s), and the resubscribe with
+// the stale token fails without getToken: so the refresh is what keeps the other stream alive.
+auto testSubTokenExpiresWithoutRefresh() -> bool
+{
+    auto const channel = liveChannel();
+    auto h = SubHarness {channel, {true, 5, {}}};
+    h.connectAndSubscribe();
+    if (!h.waitFor("subscribed", [&] { return h.subscribed_ >= 1; })) {
+        return false;
+    }
+    std::cout << "  waiting up to 90 s for the server to end the expired subscription...\n";
+    if (!h.waitFor("unsubscribed", [&] { return h.unsubscribed_ >= 1; }, 90s)
+        || !publish(channel, "AFTER")) {
+        return false;
+    }
+    settle();
+    auto const unauthorized = static_cast<int>(centrifugo::ErrorType::Unauthorized);
+    auto const errors = h.snapshot(&SubHarness::errors_);
+    auto const allUnauthorized = !errors.empty()
+                              && std::all_of(errors.begin(), errors.end(),
+                                             [&](int e) { return e == unauthorized; });
+    if (!allUnauthorized) {
+        expectCodes(errors, {unauthorized}, "errors (all Unauthorized)");
+        return false;
+    }
+    return expectEq(h.snapshot(&SubHarness::received_), {}, "publications after expiry")
+        && expectEq({h.state() == centrifugo::SubscriptionState::UNSUBSCRIBED ? "unsubscribed"
+                                                                              : "other"},
+                    {"unsubscribed"}, "state");
+}
+
+auto historySeqs(centrifugo::HistoryResult const &r) -> std::vector<std::string>
+{
+    auto out = std::vector<std::string> {};
+    for (auto const &pub : r.publications) {
+        out.push_back(pub.data.value("seq", std::string {"?"}));
+    }
+    return out;
+}
+
+// history() reads the closed channel's history: oldest first, reversed, since a position.
+auto testHistory() -> bool
+{
+    auto const channel = liveChannel();
+    auto h = SubHarness {channel, {true, std::nullopt, [](int) { return std::string {"seconds=300"}; }}};
+    h.connectAndSubscribe();
+    if (!h.waitFor("subscribed", [&] { return h.subscribed_ >= 1; }) || !publish(channel, "H1")
+        || !publish(channel, "H2") || !publish(channel, "H3")
+        || !h.waitFor("H1..H3 live", [&] { return h.received_.size() >= 3; })) {
+        return false;
+    }
+
+    h.history({10, std::nullopt, false});
+    h.history({10, std::nullopt, true});
+    h.history({0, std::nullopt, false});
+    if (!h.waitFor("3 history results", [&] { return h.historyResults_.size() >= 3; })) {
+        return false;
+    }
+    auto const results = h.snapshot(&SubHarness::historyResults_);
+    for (auto const &r : results) {
+        if (!r) {
+            std::cerr << "  FAIL: history error " << r.error().ec.value() << " "
+                      << r.error().message << '\n';
+            return false;
+        }
+    }
+    auto const &all = results[0].value();
+    auto const ok = expectEq(historySeqs(all), {"H1", "H2", "H3"}, "history limit 10")
+                 && expectEq(historySeqs(results[1].value()), {"H3", "H2", "H1"}, "reverse")
+                 && expectEq(historySeqs(results[2].value()), {}, "limit 0")
+                 && expectCodes({static_cast<int>(results[2].value().offset)},
+                                {static_cast<int>(all.publications.back().offset)},
+                                "limit 0 position");
+    if (!ok) {
+        return false;
+    }
+
+    h.history({10, centrifugo::StreamPosition {all.publications[0].offset, all.epoch}, false});
+    if (!h.waitFor("since result", [&] { return h.historyResults_.size() >= 4; })) {
+        return false;
+    }
+    auto const since = h.snapshot(&SubHarness::historyResults_)[3];
+    return since && expectEq(historySeqs(since.value()), {"H2", "H3"}, "since H1");
+}
+
+auto testHistoryNotConnected() -> bool
+{
+    auto h = SubHarness {liveChannel(), {true, std::nullopt, [](int) { return std::string {"seconds=300"}; }}};
+    h.history({10, std::nullopt, false});
+    auto const notConnected = static_cast<int>(centrifugo::ErrorType::NotConnected);
+    return expectCodes(h.snapshot(&SubHarness::historySendCodes_), {notConnected},
+                       "history() return")
+        && expectCodes({static_cast<int>(h.snapshot(&SubHarness::historyResults_).size())}, {0},
+                       "no result callback");
+}
+
+// A read in flight when the client disconnects, or the subscription is removed, completes
+// exactly once with NotConnected; a later connection does not run it again.
+auto runHistoryInterrupted(bool remove) -> bool
+{
+    auto h = SubHarness {liveChannel(),
+                         {true, std::nullopt, [](int) { return std::string {"seconds=300"}; }}};
+    h.connectAndSubscribe();
+    if (!h.waitFor("subscribed", [&] { return h.subscribed_ >= 1; })) {
+        return false;
+    }
+    h.historyThen(remove);
+    if (!h.waitFor("history result", [&] { return h.historyResults_.size() >= 1; })) {
+        return false;
+    }
+    if (!remove) {
+        h.reconnect();
+        if (!h.waitFor("reconnect", [&] { return h.connectedCount_ >= 2; })) {
+            return false;
+        }
+    }
+    settle();
+    auto codes = std::vector<int> {};
+    for (auto const &r : h.snapshot(&SubHarness::historyResults_)) {
+        codes.push_back(r ? 0 : r.error().ec.value());
+    }
+    auto const notConnected = static_cast<int>(centrifugo::ErrorType::NotConnected);
+    return expectCodes(codes, {notConnected}, "history results (exactly once)");
+}
+
+auto testHistoryDisconnected() -> bool
+{
+    return runHistoryInterrupted(false);
+}
+
+auto testHistorySubscriptionRemoved() -> bool
+{
+    return runHistoryInterrupted(true);
+}
+
+// unsubscribe() while the subscribe is in flight: unsubscribed at once, and the late subscribe
+// reply neither resurrects it nor delivers publications.
+auto testUnsubscribeWhileSubscribing() -> bool
+{
+    auto const channel = liveChannel();
+    auto h = SubHarness {channel,
+                         {true, std::nullopt, [](int) { return std::string {"seconds=300"}; }}};
+    h.unsubscribeOnConnected();
+    h.connectAndSubscribe();
+    if (!h.waitFor("unsubscribed", [&] { return h.unsubscribed_ >= 1; })
+        || !publish(channel, "P1")) {
+        return false;
+    }
+    settle();
+    return expectCodes({static_cast<int>(h.snapshot(&SubHarness::sentSubscribeTokens_).size())},
+                       {1}, "subscribe sent")
+        && expectCodes({h.snapshot(&SubHarness::subscribed_)}, {0}, "subscribed events")
+        && expectEq(h.snapshot(&SubHarness::received_), {}, "publications")
+        && expectCodes(h.snapshot(&SubHarness::errors_), {}, "errors")
+        && expectEq({h.state() == centrifugo::SubscriptionState::UNSUBSCRIBED ? "unsubscribed"
+                                                                              : "other"},
+                    {"unsubscribed"}, "state");
+}
+}
+
+// Optional argument: run only the tests whose name contains it.
+auto main(int argc, char **argv) -> int
+{
+    auto const filter = std::string {argc > 1 ? argv[1] : ""};
     auto const tests = std::vector<std::pair<std::string, std::function<bool()>>> {
             {"stream: Client::disconnect + connect", testStreamClientReconnect},
             {"stream: server disconnect, transport reconnect", testStreamTransportReconnect},
@@ -916,9 +1457,24 @@ auto main() -> int
              testPublishQueuedAcrossDisconnect},
             {"publish: connection drops before the reply", testPublishReconnectWhileWaiting},
             {"publish: client destroyed before the reply", testPublishClientDestroyed},
+            {"sub token: closed namespace without a token (103)", testSubTokenMissing},
+            {"sub token: subscribe with getToken", testSubTokenSubscribe},
+            {"sub token: expired token retried after 109", testSubTokenExpiredRetried},
+            {"sub token: getToken fails", testSubTokenGetTokenFails},
+            {"sub token: recovery across a reconnect", testSubTokenRecoveryAcrossReconnect},
+            {"history: limit, reverse, position, since", testHistory},
+            {"history: not connected", testHistoryNotConnected},
+            {"history: connection lost with a read in flight", testHistoryDisconnected},
+            {"history: subscription removed with a read in flight", testHistorySubscriptionRemoved},
+            {"sub: unsubscribe while the subscribe is in flight", testUnsubscribeWhileSubscribing},
+            {"sub token: survives a 60 s TTL", testSubTokenSurvivesTtl},
+            {"sub token: static token expires without refresh", testSubTokenExpiresWithoutRefresh},
     };
     auto failed = 0;
     for (auto const &[name, test] : tests) {
+        if (name.find(filter) == std::string::npos) {
+            continue;
+        }
         std::cout << "[" << name << "]\n";
         auto const ok = test();
         std::cout << (ok ? "PASS " : "FAIL ") << name << '\n';

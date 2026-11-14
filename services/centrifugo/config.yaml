@@ -29,6 +29,13 @@ channel:
       history_ttl: "300s"
       force_recovery: true
       force_recovery_mode: "cache"
+    # Closed like the API's live_dmd: subscribing needs a subscription token.
+    - name: "live"
+      allow_subscribe_for_client: false
+      allow_history_for_subscriber: true
+      history_size: 10
+      history_ttl: "30s"
+      force_recovery: true
     # Used by tests/recovery_test.cpp for client-level publish (no subscription).
     - name: "pub"
       allow_publish_for_client: true
