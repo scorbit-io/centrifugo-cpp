@@ -50,6 +50,11 @@ public:
 
     auto newSubscription(std::string const &channel)
             -> outcome::result<std::reference_wrapper<Subscription>, std::string>;
+    // For channels that need a subscription token; see SubscriptionConfig.
+    auto newSubscription(std::string const &channel, SubscriptionConfig config)
+            -> outcome::result<std::reference_wrapper<Subscription>, std::string>;
+    // Safe from the subscription's own callbacks: it leaves the client at once and is destroyed
+    // in a later strand turn. The reference is invalid after this call.
     auto removeSubscription(SubscriptionRef const &sub) -> void;
     auto subscription(std::string const &channel) const -> std::optional<SubscriptionRef>;
     auto subscriptions() const -> std::unordered_map<std::string, SubscriptionRef>;

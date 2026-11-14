@@ -74,6 +74,33 @@ auto to_json(json &j, SendRequest const &req) -> void
     j = json {{"data", req.data}};
 }
 
+auto to_json(json &j, StreamPosition const &pos) -> void
+{
+    j = json::object();
+
+    if (pos.offset != 0)
+        j["offset"] = pos.offset;
+    if (!pos.epoch.empty())
+        j["epoch"] = pos.epoch;
+}
+
+auto to_json(json &j, HistoryRequest const &req) -> void
+{
+    j = json {{"channel", req.channel}};
+
+    if (req.limit != 0)
+        j["limit"] = req.limit;
+    if (req.since)
+        j["since"] = *req.since;
+    if (req.reverse)
+        j["reverse"] = req.reverse;
+}
+
+auto to_json(json &j, SubRefreshRequest const &req) -> void
+{
+    j = json {{"channel", req.channel}, {"token", req.token}};
+}
+
 auto from_json(json const &j, ConnectResult &result) -> void
 {
     if (j.contains("client"))
@@ -156,6 +183,24 @@ auto from_json(json const &, SendResult &) -> void
 {
 }
 
+auto from_json(json const &j, HistoryResult &result) -> void
+{
+    if (j.contains("publications"))
+        j.at("publications").get_to(result.publications);
+    if (j.contains("offset"))
+        j.at("offset").get_to(result.offset);
+    if (j.contains("epoch"))
+        j.at("epoch").get_to(result.epoch);
+}
+
+auto from_json(json const &j, SubRefreshResult &result) -> void
+{
+    if (j.contains("expires"))
+        j.at("expires").get_to(result.expires);
+    if (j.contains("ttl"))
+        j.at("ttl").get_to(result.ttl);
+}
+
 auto to_json(json &j, Command const &cmd) -> void
 {
     j["id"] = cmd.id;
@@ -176,6 +221,11 @@ auto to_json(json &j, Command const &cmd) -> void
                 } else if constexpr (std::is_same_v<std::decay_t<decltype(req)>,
                                                     UnsubscribeRequest>) {
                     j["unsubscribe"] = req;
+                } else if constexpr (std::is_same_v<std::decay_t<decltype(req)>, HistoryRequest>) {
+                    j["history"] = req;
+                } else if constexpr (std::is_same_v<std::decay_t<decltype(req)>,
+                                                    SubRefreshRequest>) {
+                    j["sub_refresh"] = req;
                 }
             },
             cmd.request);
@@ -210,6 +260,10 @@ auto from_json(json const &j, Reply &reply) -> void
         reply.result = j.at("send").get<SendResult>();
     } else if (j.contains("unsubscribe")) {
         reply.result = j.at("unsubscribe").get<UnsubscribeResult>();
+    } else if (j.contains("history")) {
+        reply.result = j.at("history").get<HistoryResult>();
+    } else if (j.contains("sub_refresh")) {
+        reply.result = j.at("sub_refresh").get<SubRefreshResult>();
     } else if (j.contains("push")) {
         reply.result = j.at("push").get<Push>();
     }

@@ -175,7 +175,7 @@ public:
 
     auto transport() -> Transport & { return transport_; }
 
-    auto newSubscription(std::string const &channel)
+    auto newSubscription(std::string const &channel, SubscriptionConfig config)
             -> outcome::result<std::reference_wrapper<Subscription>, std::string>
     {
         if (subscriptions_.find(channel) != subscriptions_.end()) {
@@ -185,14 +185,30 @@ public:
             return std::string {"channel " + channel
                                 + " already exists as server-side subscription"};
         }
-        auto &sub = subscriptions_.emplace(channel, SubscriptionImpl {channel, transport_})
+        // Built in place: a moved SubscriptionImpl would have to re-arm its timer.
+        auto &sub = subscriptions_.try_emplace(channel, channel, transport_, std::move(config))
                             .first->second.subscription();
         return sub;
     }
 
     auto removeSubscription(SubscriptionRef const &sub) -> void
     {
-        subscriptions_.erase(sub.get().channel());
+        auto node = subscriptions_.extract(sub.get().channel());
+        if (node.empty()) {
+            return;
+        }
+        // Out of the map now, destroyed in a later strand turn: the caller may be inside one of
+        // its callbacks. Pending history reads then complete with NotConnected.
+        node.mapped().detach();
+        detached_.push_back(std::move(node));
+        net::post(transport_.executor(), [this, alive = std::weak_ptr<bool> {alive_}] {
+            if (alive.expired()) {
+                return; // ~Client already destroyed them
+            }
+            // Moved out first: a history callback run by a destructor may remove another.
+            auto const nodes = std::move(detached_);
+            detached_.clear();
+        });
     }
 
     auto subscription(std::string const &channel) -> std::optional<SubscriptionRef>
@@ -317,8 +333,13 @@ private:
                             onSubscribed_(push.channel);
                         }
                     } else if constexpr (std::is_same_v<PushType, Unsubscribe>) {
-                        if (serverSubscriptions_.erase(push.channel) && onUnsubscribed_) {
-                            onUnsubscribed_(push.channel);
+                        if (serverSubscriptions_.erase(push.channel)) {
+                            if (onUnsubscribed_) {
+                                onUnsubscribed_(push.channel);
+                            }
+                        } else if (auto itr = subscriptions_.find(push.channel);
+                                   itr != std::end(subscriptions_)) {
+                            itr->second.handleServerUnsubscribe(type);
                         }
                     }
                 },
@@ -371,6 +392,9 @@ private:
     std::function<void(LogEntry)> logHandler_;
     Transport transport_;
     std::unordered_map<std::string, SubscriptionImpl> subscriptions_;
+    // Removed subscriptions awaiting destruction in a later strand turn, or in ~Client.
+    std::vector<std::unordered_map<std::string, SubscriptionImpl>::node_type> detached_;
+    std::shared_ptr<bool> alive_ {std::make_shared<bool>(true)};
     // Stream position per server-side channel (JWT `channels` claim), for recovery on reconnect.
     struct ServerSubState {
         std::uint64_t offset {0};
@@ -437,7 +461,13 @@ auto Client::onDisconnected(std::function<void(Error const &)> callback) -> void
 auto Client::newSubscription(std::string const &channel)
         -> outcome::result<std::reference_wrapper<Subscription>, std::string>
 {
-    return pImpl->newSubscription(channel);
+    return pImpl->newSubscription(channel, SubscriptionConfig {});
+}
+
+auto Client::newSubscription(std::string const &channel, SubscriptionConfig config)
+        -> outcome::result<std::reference_wrapper<Subscription>, std::string>
+{
+    return pImpl->newSubscription(channel, std::move(config));
 }
 
 auto Client::removeSubscription(SubscriptionRef const &sub) -> void
