@@ -11,7 +11,7 @@ namespace centrifugo {
 namespace {
 
 // A temporary subscribe or sub_refresh failure is retried after this long.
-auto constexpr RETRY_DELAY = std::chrono::seconds {5};
+auto constexpr RETRY_DELAY = std::chrono::milliseconds {5000};
 // Centrifugo unsubscribe push codes from 2500 ask the client to subscribe again.
 auto constexpr RESUBSCRIBE_CODE_MIN = 2500u;
 
@@ -52,17 +52,20 @@ auto SubscriptionImpl::subscription() -> Subscription &
 
 auto SubscriptionImpl::subscribe() -> outcome::result<void, std::string>
 {
+    if (detached_) {
+        return "subscription was removed from the client";
+    }
     if (state_ != SubscriptionState::UNSUBSCRIBED) {
         return "cannot subscribe if not in unsubscribed state";
     }
 
     state_ = SubscriptionState::SUBSCRIBING;
-    ++transitions_;
+    auto const attempt = ++transitions_;
     tokenRetried_ = false;
     subscribingSignal_();
 
-    if (state_ == SubscriptionState::SUBSCRIBING
-        && transport_.state() == ConnectionState::Connected) {
+    // onSubscribing may have unsubscribed, resubscribed (already sent) or removed it.
+    if (transitions_ == attempt && connected()) {
         sendSubscribeCmd();
     }
     return outcome::success();
@@ -103,8 +106,8 @@ auto SubscriptionImpl::history(HistoryOptions const &options,
                                Subscription::HistoryCallback onResult)
         -> outcome::result<void, Error>
 {
-    if (transport_.state() != ConnectionState::Connected) {
-        return Error {ErrorType::NotConnected, "not connected"};
+    if (detached_ || !connected()) {
+        return Error {ErrorType::NotConnected, detached_ ? "subscription removed" : "not connected"};
     }
 
     auto cmd = makeCommand(HistoryRequest {channel_, options.limit, options.since, options.reverse});
@@ -142,9 +145,10 @@ auto SubscriptionImpl::handleServerUnsubscribe(Unsubscribe const &unsubscribe) -
     }
     // E.g. the token expired: subscribe again, from the kept position. A stale token gets
     // 109 and is replaced from getToken.
+    auto const attempt =
+            state_ == SubscriptionState::SUBSCRIBING ? transitions_ : transitions_ + 1;
     setState(SubscriptionState::SUBSCRIBING);
-    if (state_ == SubscriptionState::SUBSCRIBING
-        && transport_.state() == ConnectionState::Connected) {
+    if (transitions_ == attempt && connected()) {
         tokenRetried_ = false;
         sendSubscribeCmd();
     }
@@ -152,14 +156,24 @@ auto SubscriptionImpl::handleServerUnsubscribe(Unsubscribe const &unsubscribe) -
 
 auto SubscriptionImpl::detach() -> void
 {
+    // Not awaited (no longer routed here); lets the channel be subscribed again.
+    if (serverMayHaveIt() && connected()) {
+        transport_.send(makeCommand(UnsubscribeRequest {channel_}));
+    }
     deinit();
     timer_.cancel();
     alive_.reset(); // a timer completion already queued must not act either
-    // Not awaited (no longer routed here); lets the channel be subscribed again.
-    if (serverMayHaveIt() && transport_.state() == ConnectionState::Connected) {
-        transport_.send(makeCommand(UnsubscribeRequest {channel_}));
-    }
     abandonPending();
+    // Ends whatever operation is unwinding through this object, without another callback:
+    // no subscribe is sent and no further recovered publication delivered.
+    detached_ = true;
+    state_ = SubscriptionState::UNSUBSCRIBED;
+    ++transitions_;
+}
+
+auto SubscriptionImpl::connected() const -> bool
+{
+    return !detached_ && transport_.state() == ConnectionState::Connected;
 }
 
 auto SubscriptionImpl::serverMayHaveIt() const -> bool
@@ -267,7 +281,13 @@ auto SubscriptionImpl::sendSubscribeCmd() -> void
 
     if (usesToken()) {
         if (token_.empty()) {
+            auto const attempt = transitions_;
             auto token = fetchToken();
+            // getToken may have unsubscribed, removed the subscription or disconnected.
+            if (transitions_ != attempt || state_ != SubscriptionState::SUBSCRIBING
+                || !connected()) {
+                return;
+            }
             if (!token) {
                 endSubscription(token.error());
                 return;
@@ -362,8 +382,14 @@ auto SubscriptionImpl::handleSubscribed(SubscribeResult const &result) -> void
         startRefreshTimer(result.ttl);
     }
 
+    auto const subscribed = transitions_ + 1;
     setState(SubscriptionState::SUBSCRIBED);
     for (auto const &publication : result.publications) {
+        // A callback may have unsubscribed, resubscribed, removed it or disconnected: the rest of
+        // this reply belongs to an attempt that is over.
+        if (transitions_ != subscribed || !connected()) {
+            return;
+        }
         handlePublish(publication);
     }
 }
@@ -434,7 +460,7 @@ auto SubscriptionImpl::endSubscription(Error const &error) -> void
     }
 }
 
-auto SubscriptionImpl::startTimer(std::chrono::seconds const delay, TimerAction const action)
+auto SubscriptionImpl::startTimer(std::chrono::milliseconds const delay, TimerAction const action)
         -> void
 {
     timer_.expires_after(delay);
@@ -446,8 +472,7 @@ auto SubscriptionImpl::startTimer(std::chrono::seconds const delay, TimerAction 
         }
         if (action == TimerAction::Refresh) {
             refreshToken();
-        } else if (state_ == SubscriptionState::SUBSCRIBING
-                   && transport_.state() == ConnectionState::Connected) {
+        } else if (state_ == SubscriptionState::SUBSCRIBING && connected()) {
             sendSubscribeCmd();
         }
     });
@@ -458,16 +483,17 @@ auto SubscriptionImpl::startRefreshTimer(std::uint32_t const ttlSeconds) -> void
     if (ttlSeconds == 0) {
         return;
     }
-    // At 3/4 of a short TTL, otherwise the configured lead before expiry.
-    auto const ttl = std::chrono::seconds {ttlSeconds};
-    startTimer(ttl - std::min(transport_.config().refreshTokenBeforeExpiry, ttl / 4),
-               TimerAction::Refresh);
+    // At 3/4 of a short TTL, otherwise the configured lead before expiry. Milliseconds, so a
+    // TTL of a few seconds still refreshes ahead of expiry.
+    auto const ttl = std::chrono::milliseconds {std::chrono::seconds {ttlSeconds}};
+    auto const lead = std::min<std::chrono::milliseconds>(
+            transport_.config().refreshTokenBeforeExpiry, ttl / 4);
+    startTimer(ttl - lead, TimerAction::Refresh);
 }
 
 auto SubscriptionImpl::refreshToken() -> void
 {
-    if (state_ != SubscriptionState::SUBSCRIBED
-        || transport_.state() != ConnectionState::Connected) {
+    if (state_ != SubscriptionState::SUBSCRIBED || !connected()) {
         return;
     }
     if (!config_.getToken) {
@@ -477,7 +503,12 @@ auto SubscriptionImpl::refreshToken() -> void
         return;
     }
 
+    auto const subscribed = transitions_;
     auto token = fetchToken();
+    // getToken may have ended or replaced this subscription, or disconnected.
+    if (transitions_ != subscribed || state_ != SubscriptionState::SUBSCRIBED || !connected()) {
+        return;
+    }
     if (!token) {
         endSubscription(token.error());
         return;

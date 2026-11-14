@@ -68,11 +68,12 @@ private:
 
     auto usesToken() const -> bool;
     auto fetchToken() -> outcome::result<std::string, Error>;
+    auto connected() const -> bool;
     auto handleSubscribed(SubscribeResult const &result) -> void;
     auto handleSubscribeError(ErrorReply const &error) -> void;
     auto handleRefreshError(ErrorReply const &error) -> void;
     auto endSubscription(Error const &error) -> void;
-    auto startTimer(std::chrono::seconds delay, TimerAction action) -> void;
+    auto startTimer(std::chrono::milliseconds delay, TimerAction action) -> void;
     auto startRefreshTimer(std::uint32_t ttlSeconds) -> void;
     auto refreshToken() -> void;
     auto failPendingHistory(std::string const &reason) -> void;
@@ -97,8 +98,10 @@ private:
     std::string token_;
     bool tokenRetried_ {false};
     bool refreshRetried_ {false};
-    // Bumped on every state change, to tell whether a callback changed it.
+    // Bumped on every state change and on detach: an operation that ran user code (a signal,
+    // getToken) continues only if it is unchanged.
     std::uint64_t transitions_ {0};
+    bool detached_ {false};
     // A queued timer completion can't be recalled: its handler checks this before using `this`.
     std::shared_ptr<bool> alive_ {std::make_shared<bool>(true)};
     net::steady_timer timer_;

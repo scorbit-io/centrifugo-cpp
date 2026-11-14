@@ -929,17 +929,7 @@ public:
         });
         client_.onConnected([this] { update([this] { connected_ = true; }); });
 
-        auto sub = options_.withToken ? client_.newSubscription(channel_, makeSubConfig())
-                                      : client_.newSubscription(channel_);
-        sub_ = &sub.value().get();
-        sub_->onSubscribed([this] { update([this] { ++subscribed_; }); });
-        sub_->onUnsubscribed([this] { update([this] { ++unsubscribed_; }); });
-        sub_->onError([this](centrifugo::Error const &e) {
-            update([this, e] { errors_.push_back(e.ec.value()); });
-        });
-        sub_->onPublication([this](centrifugo::Publication const &pub) {
-            update([this, pub] { received_.push_back(pub.data.value("seq", std::string {"?"})); });
-        });
+        addSubscription();
         thread_ = std::thread {[this] { ioc_.run(); }};
     }
 
@@ -955,6 +945,52 @@ public:
     auto operator=(SubHarness const &) -> SubHarness & = delete;
 
     auto user() const -> std::string const & { return user_; }
+
+    auto connectOnly() -> void
+    {
+        onStrand([this] { (void)client_.connect(); });
+    }
+
+    auto subscribeOnly() -> void
+    {
+        onStrand([this] { (void)sub_->subscribe(); });
+    }
+
+    // The next onSubscribing removes the subscription (a one-shot app callback).
+    auto removeOnNextSubscribing() -> void
+    {
+        onStrand([this] {
+            sub_->onSubscribing([this, fired = std::make_shared<bool>(false)] {
+                if (!*fired) {
+                    *fired = true;
+                    client_.removeSubscription(*sub_);
+                }
+            });
+        });
+    }
+
+    // The next onSubscribing unsubscribes and subscribes again.
+    auto bounceOnNextSubscribing() -> void
+    {
+        onStrand([this] {
+            sub_->onSubscribing([this, fired = std::make_shared<bool>(false)] {
+                if (!*fired) {
+                    *fired = true;
+                    sub_->unsubscribe();
+                    (void)sub_->subscribe();
+                }
+            });
+        });
+    }
+
+    // A fresh subscription to the same channel, subscribed at once.
+    auto readdAndSubscribe() -> void
+    {
+        onStrand([this] {
+            addSubscription();
+            (void)sub_->subscribe();
+        });
+    }
 
     auto connectAndSubscribe() -> void
     {
@@ -1095,6 +1131,21 @@ private:
             }
         };
         return config;
+    }
+
+    auto addSubscription() -> void
+    {
+        auto sub = options_.withToken ? client_.newSubscription(channel_, makeSubConfig())
+                                      : client_.newSubscription(channel_);
+        sub_ = &sub.value().get();
+        sub_->onSubscribed([this] { update([this] { ++subscribed_; }); });
+        sub_->onUnsubscribed([this] { update([this] { ++unsubscribed_; }); });
+        sub_->onError([this](centrifugo::Error const &e) {
+            update([this, e] { errors_.push_back(e.ec.value()); });
+        });
+        sub_->onPublication([this](centrifugo::Publication const &pub) {
+            update([this, pub] { received_.push_back(pub.data.value("seq", std::string {"?"})); });
+        });
     }
 
     auto makeSubConfig() -> centrifugo::SubscriptionConfig
@@ -1429,6 +1480,52 @@ auto testUnsubscribeWhileSubscribing() -> bool
                                                                               : "other"},
                     {"unsubscribed"}, "state");
 }
+
+// removeSubscription() from onSubscribing: the subscribe() that fired it sends nothing, so the
+// same channel can be subscribed again (no 105 AlreadySubscribed) and delivers.
+auto testRemoveFromSubscribing() -> bool
+{
+    auto const channel = liveChannel();
+    auto h = SubHarness {channel,
+                         {true, std::nullopt, [](int) { return std::string {"seconds=300"}; }}};
+    h.connectOnly();
+    if (!h.waitFor("connect", [&] { return h.connectedCount_ >= 1; })) {
+        return false;
+    }
+    h.removeOnNextSubscribing();
+    h.subscribeOnly();
+    settle();
+    if (!expectCodes({static_cast<int>(h.snapshot(&SubHarness::sentSubscribeTokens_).size())},
+                     {0}, "subscribe sent by the removed subscription")) {
+        return false;
+    }
+    h.readdAndSubscribe();
+    if (!h.waitFor("re-added subscribed", [&] { return h.subscribed_ >= 1; })
+        || !publish(channel, "P1") || !h.waitFor("P1", [&] { return h.received_.size() >= 1; })) {
+        return false;
+    }
+    return expectCodes(h.snapshot(&SubHarness::errors_), {}, "errors");
+}
+
+// unsubscribe() + subscribe() from onSubscribing: exactly one subscribe goes out.
+auto testBounceFromSubscribing() -> bool
+{
+    auto h = SubHarness {liveChannel(),
+                         {true, std::nullopt, [](int) { return std::string {"seconds=300"}; }}};
+    h.connectOnly();
+    if (!h.waitFor("connect", [&] { return h.connectedCount_ >= 1; })) {
+        return false;
+    }
+    h.bounceOnNextSubscribing();
+    h.subscribeOnly();
+    if (!h.waitFor("subscribed", [&] { return h.subscribed_ >= 1; })) {
+        return false;
+    }
+    settle();
+    return expectCodes({static_cast<int>(h.snapshot(&SubHarness::sentSubscribeTokens_).size())},
+                       {1}, "subscribe commands sent")
+        && expectCodes(h.snapshot(&SubHarness::errors_), {}, "errors");
+}
 }
 
 // Optional argument: run only the tests whose name contains it.
@@ -1467,6 +1564,8 @@ auto main(int argc, char **argv) -> int
             {"history: connection lost with a read in flight", testHistoryDisconnected},
             {"history: subscription removed with a read in flight", testHistorySubscriptionRemoved},
             {"sub: unsubscribe while the subscribe is in flight", testUnsubscribeWhileSubscribing},
+            {"sub: removed from onSubscribing, then re-added", testRemoveFromSubscribing},
+            {"sub: unsubscribe + subscribe from onSubscribing", testBounceFromSubscribing},
             {"sub token: survives a 60 s TTL", testSubTokenSurvivesTtl},
             {"sub token: static token expires without refresh", testSubTokenExpiresWithoutRefresh},
     };
