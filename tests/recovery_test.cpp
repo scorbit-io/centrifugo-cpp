@@ -1680,6 +1680,63 @@ auto testRebuildWhileConnecting() -> bool
 }
 
 // Optional argument: run only the tests whose name contains it.
+// disconnect() in the turn that started the connect: the resolve still succeeds, and its result
+// must not open a connection.
+auto testDisconnectBeforeResolve() -> bool
+{
+    auto accepted = std::atomic<int> {0};
+    auto server = net::io_context {};
+    auto acceptor = net::ip::tcp::acceptor {server, {net::ip::make_address("127.0.0.1"), 0}};
+    auto const port = acceptor.local_endpoint().port();
+    auto peers = std::vector<net::ip::tcp::socket> {};
+    std::function<void()> accept = [&] {
+        acceptor.async_accept([&](boost::system::error_code ec, net::ip::tcp::socket peer) {
+            if (ec) {
+                return;
+            }
+            ++accepted;
+            peers.push_back(std::move(peer));
+            accept();
+        });
+    };
+    accept();
+    auto serverThread = std::thread {[&] { server.run(); }};
+
+    auto ioc = net::io_context {};
+    auto work = net::make_work_guard(ioc);
+    auto strand = net::make_strand(ioc);
+    auto config = centrifugo::ClientConfig {};
+    config.getToken = []() -> outcome::result<std::string> { return std::string {"token"}; };
+    auto client = std::make_unique<centrifugo::Client>(
+            strand, "ws://127.0.0.1:" + std::to_string(port) + "/connection/websocket", config);
+    auto clientThread = std::thread {[&] { ioc.run(); }};
+    auto onStrand = [&](auto f) {
+        auto done = std::promise<void> {};
+        net::post(strand, [&] {
+            f();
+            done.set_value();
+        });
+        done.get_future().wait();
+    };
+
+    for (auto i = 0; i < 20; ++i) {
+        onStrand([&] {
+            (void)client->connect();
+            client->disconnect();
+        });
+        std::this_thread::sleep_for(20ms);
+    }
+    std::this_thread::sleep_for(300ms);
+    onStrand([&] { client.reset(); });
+    work.reset();
+    ioc.stop();
+    clientThread.join();
+    net::post(server, [&] { acceptor.close(); });
+    server.stop();
+    serverThread.join();
+    return expectCodes({accepted.load()}, {0}, "connections accepted");
+}
+
 auto main(int argc, char **argv) -> int
 {
     auto const filter = std::string {argc > 1 ? argv[1] : ""};
@@ -1724,6 +1781,7 @@ auto main(int argc, char **argv) -> int
             {"lifecycle: destroyed while connecting", testDestroyWhileConnecting},
             {"lifecycle: reconnected while connecting", testReconnectWhileConnecting},
             {"lifecycle: rebuilt twice while connecting", testRebuildWhileConnecting},
+            {"lifecycle: disconnect before the resolve completes", testDisconnectBeforeResolve},
     };
     auto failed = 0;
     for (auto const &[name, test] : tests) {

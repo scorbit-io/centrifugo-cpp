@@ -73,6 +73,7 @@ Transport::Transport(net::strand<net::io_context::executor_type> const &strand, 
     });
 
     disconnectedSignal_.connect([this](auto const &) {
+        resolver_.cancel();
         reconnectTimer_.cancel();
         pingTimer_.cancel();
         tokenRefreshTimer_.cancel();
@@ -184,12 +185,13 @@ auto Transport::connect() -> void
         resetWebSocket<WsStream>(tcp::socket{executor});
     }
 
-    // An aborted operation was cancelled by disconnect() or by a newer attempt, which owns
-    // the transport now: it must not start another.
+    // An aborted or stale step belongs to an attempt that disconnect() or a newer attempt
+    // ended: that one owns the transport now, so this one must not touch it.
     resolver_.async_resolve(
             urlComponents_.host, urlComponents_.port,
-            guarded([this](beast::error_code ec, tcp::resolver::results_type results) {
-                if (ec == net::error::operation_aborted) {
+            guarded([this, attempt = conn_.get()](beast::error_code ec,
+                                                  tcp::resolver::results_type results) {
+                if (ec == net::error::operation_aborted || stale(attempt)) {
                     return;
                 }
                 if (ec) {
@@ -198,14 +200,15 @@ auto Transport::connect() -> void
                     return;
                 }
 
-                withWs([this, results](auto &ws) {
+                withWs([this, attempt, results](auto &ws) {
                     using WS = std::decay_t<decltype(ws)>;
 
                     net::async_connect(
                             beast::get_lowest_layer(ws), results,
-                            guarded([this, &ws](beast::error_code ec,
-                                                tcp::resolver::results_type::endpoint_type) {
-                                if (ec == net::error::operation_aborted) {
+                            guarded([this, attempt,
+                                     &ws](beast::error_code ec,
+                                          tcp::resolver::results_type::endpoint_type) {
+                                if (ec == net::error::operation_aborted || stale(attempt)) {
                                     return;
                                 }
                                 if (ec) {
@@ -280,8 +283,9 @@ auto Transport::handShake() -> void
             }
 
             ws.next_layer().async_handshake(
-                    net::ssl::stream_base::client, guarded([this](beast::error_code ec) {
-                        if (ec == net::error::operation_aborted) {
+                    net::ssl::stream_base::client,
+                    guarded([this, attempt = conn_.get()](beast::error_code ec) {
+                        if (ec == net::error::operation_aborted || stale(attempt)) {
                             return;
                         }
                         if (ec) {
@@ -290,10 +294,11 @@ auto Transport::handShake() -> void
                             return;
                         }
 
-                        withWs([this](auto &ws) {
+                        withWs([this, attempt](auto &ws) {
                             ws.async_handshake(urlComponents_.host, urlComponents_.path,
-                                               guarded([this](beast::error_code ec) {
-                                                   if (ec == net::error::operation_aborted) {
+                                               guarded([this, attempt](beast::error_code ec) {
+                                                   if (ec == net::error::operation_aborted
+                                                       || stale(attempt)) {
                                                        return;
                                                    }
                                                    if (ec) {
@@ -308,8 +313,8 @@ auto Transport::handShake() -> void
                     }));
         } else {
             ws.async_handshake(urlComponents_.host, urlComponents_.path,
-                               guarded([this](beast::error_code ec) {
-                                   if (ec == net::error::operation_aborted) {
+                               guarded([this, attempt = conn_.get()](beast::error_code ec) {
+                                   if (ec == net::error::operation_aborted || stale(attempt)) {
                                        return;
                                    }
                                    if (ec) {

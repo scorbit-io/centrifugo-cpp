@@ -204,6 +204,12 @@ private:
         beast::flat_buffer buffer;
     };
 
+    // A connect step of an attempt that was disconnected or superseded must not act on its result.
+    auto stale(Connection const *attempt) const -> bool
+    {
+        return state_ == ConnectionState::Disconnected || attempt != conn_.get();
+    }
+
     // Shared with every pending handler; false once the transport is destroyed.
     std::shared_ptr<bool> alive_ = std::make_shared<bool>(true);
 
