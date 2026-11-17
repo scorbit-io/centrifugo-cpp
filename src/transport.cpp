@@ -50,7 +50,7 @@ Transport::Transport(net::strand<net::io_context::executor_type> const &strand, 
     : config_ {std::move(config)}
     , url_ {std::move(url)}
     , resolver_ {strand}
-    , ws_ {WsStream {strand}}
+    , conn_ {std::make_shared<Connection>(std::in_place_type<WsStream>, strand)}
     , reconnectTimer_ {strand}
     , pingTimer_ {strand}
     , tokenRefreshTimer_ {strand}
@@ -78,6 +78,12 @@ Transport::Transport(net::strand<net::io_context::executor_type> const &strand, 
         tokenRefreshTimer_.cancel();
         closeConnection();
     });
+}
+
+Transport::~Transport()
+{
+    // The members' destructors cancel their operations; the handlers find this and return.
+    *alive_ = false;
 }
 
 auto Transport::state() const -> ConnectionState
@@ -159,7 +165,7 @@ auto Transport::send(json const &j, Command &&cmd) -> void
         pendingCommands_.push_back(std::move(cmd));
     }
 
-    withWs([this](auto &ws) { net::post(ws.get_executor(), [this] { flush(); }); });
+    withWs([this](auto &ws) { net::post(ws.get_executor(), guarded([this] { flush(); })); });
 }
 
 auto Transport::connect() -> void
@@ -178,9 +184,14 @@ auto Transport::connect() -> void
         resetWebSocket<WsStream>(tcp::socket{executor});
     }
 
+    // An aborted operation was cancelled by disconnect() or by a newer attempt, which owns
+    // the transport now: it must not start another.
     resolver_.async_resolve(
             urlComponents_.host, urlComponents_.port,
-            [this](beast::error_code ec, tcp::resolver::results_type results) {
+            guarded([this](beast::error_code ec, tcp::resolver::results_type results) {
+                if (ec == net::error::operation_aborted) {
+                    return;
+                }
                 if (ec) {
                     errorSignal_(toError(ec));
                     reconnect();
@@ -192,8 +203,11 @@ auto Transport::connect() -> void
 
                     net::async_connect(
                             beast::get_lowest_layer(ws), results,
-                            [this, &ws](beast::error_code ec,
-                                        tcp::resolver::results_type::endpoint_type) {
+                            guarded([this, &ws](beast::error_code ec,
+                                                tcp::resolver::results_type::endpoint_type) {
+                                if (ec == net::error::operation_aborted) {
+                                    return;
+                                }
                                 if (ec) {
                                     if (ec != net::error::connection_refused) {
                                         errorSignal_(toError(ec));
@@ -211,13 +225,17 @@ auto Transport::connect() -> void
                                 }
 
                                 handShake();
-                            });
+                            }));
                 });
-            });
+            }));
 }
 
 auto Transport::reconnect(Error const &error) -> void
 {
+    // Only connect() and initialConnect() leave Disconnected: a disconnected client stays so.
+    if (state_ == ConnectionState::Disconnected) {
+        return;
+    }
     setState(ConnectionState::Connecting, error);
     ++reconnectAttempts_;
     auto const delay = calculateBackoffDelay();
@@ -229,7 +247,7 @@ auto Transport::reconnect(Error const &error) -> void
     }
 
     reconnectTimer_.expires_after(delay);
-    reconnectTimer_.async_wait([this](beast::error_code ec) {
+    reconnectTimer_.async_wait(guarded([this](beast::error_code ec) {
         if (ec) {
             if (ec == net::error::operation_aborted) {
                 return;
@@ -237,9 +255,13 @@ auto Transport::reconnect(Error const &error) -> void
             errorSignal_(toError(ec));
             return;
         }
+        // Expired just as disconnect() cancelled it: the handler was already queued.
+        if (state_ == ConnectionState::Disconnected) {
+            return;
+        }
 
         connect();
-    });
+    }));
 }
 
 auto Transport::handShake() -> void
@@ -258,7 +280,10 @@ auto Transport::handShake() -> void
             }
 
             ws.next_layer().async_handshake(
-                    net::ssl::stream_base::client, [this](beast::error_code ec) {
+                    net::ssl::stream_base::client, guarded([this](beast::error_code ec) {
+                        if (ec == net::error::operation_aborted) {
+                            return;
+                        }
                         if (ec) {
                             errorSignal_(toError(ec));
                             reconnect();
@@ -267,7 +292,10 @@ auto Transport::handShake() -> void
 
                         withWs([this](auto &ws) {
                             ws.async_handshake(urlComponents_.host, urlComponents_.path,
-                                               [this](beast::error_code ec) {
+                                               guarded([this](beast::error_code ec) {
+                                                   if (ec == net::error::operation_aborted) {
+                                                       return;
+                                                   }
                                                    if (ec) {
                                                        errorSignal_(toError(ec));
                                                        reconnect();
@@ -275,12 +303,15 @@ auto Transport::handShake() -> void
                                                    }
                                                    sendConnectCmd();
                                                    read();
-                                               });
+                                               }));
                         });
-                    });
+                    }));
         } else {
             ws.async_handshake(urlComponents_.host, urlComponents_.path,
-                               [this](beast::error_code ec) {
+                               guarded([this](beast::error_code ec) {
+                                   if (ec == net::error::operation_aborted) {
+                                       return;
+                                   }
                                    if (ec) {
                                        errorSignal_(toError(ec));
                                        reconnect();
@@ -288,63 +319,67 @@ auto Transport::handShake() -> void
                                    }
                                    sendConnectCmd();
                                    read();
-                               });
+                               }));
         }
     });
 }
 
 auto Transport::read() -> void
 {
-    withWs([this](auto &ws) {
-        ws.async_read(buffer_, [this, &ws](beast::error_code ec, std::size_t) {
-            if (ec && ec != net::ssl::error::stream_truncated) {
-                if (ec == beast::errc::operation_canceled) {
-                    return;
-                }
+    auto &buffer = conn_->buffer; // this connection's; kept alive by the handler
+    withWs([this, &buffer](auto &ws) {
+        ws.async_read(buffer, guarded([this, &ws, &buffer](beast::error_code ec, std::size_t) {
+                          if (ec && ec != net::ssl::error::stream_truncated) {
+                              if (ec == beast::errc::operation_canceled) {
+                                  return;
+                              }
 
-                if (ec != websocket::error::closed) {
-                    reconnect(Error {ec, ec.message()});
-                    return;
-                }
+                              if (ec != websocket::error::closed) {
+                                  reconnect(Error {ec, ec.message()});
+                                  return;
+                              }
 
-                auto error = Error {static_cast<ErrorType>(ws.reason().code),
-                                    std::string {ws.reason().reason}};
-                if (isTerminalDisconnectCode(error.ec.value())) {
-                    disconnect(error);
-                    return;
-                }
-                reconnect(error);
-                return;
-            }
+                              auto error = Error {static_cast<ErrorType>(ws.reason().code),
+                                                  std::string {ws.reason().reason}};
+                              if (isTerminalDisconnectCode(error.ec.value())) {
+                                  disconnect(error);
+                                  return;
+                              }
+                              reconnect(error);
+                              return;
+                          }
 
-            auto data = beast::buffers_to_string(buffer_.data());
-            buffer_.consume(buffer_.size());
+                          auto data = beast::buffers_to_string(buffer.data());
+                          buffer.consume(buffer.size());
 
-            if (config_.logHandler) {
-                config_.logHandler({LogLevel::Debug, "received message", {{"message", data}}});
-            }
+                          if (config_.logHandler) {
+                              config_.logHandler(
+                                      {LogLevel::Debug, "received message", {{"message", data}}});
+                          }
 
-            auto ss = std::stringstream {data};
-            auto line = std::string {};
-            while (std::getline(ss, line)) {
-                if (line.empty()) {
-                    continue;
-                }
+                          auto ss = std::stringstream {data};
+                          auto line = std::string {};
+                          while (std::getline(ss, line)) {
+                              if (line.empty()) {
+                                  continue;
+                              }
 
-                try {
-                    handleReceivedMsg(json::parse(line));
-                } catch (std::exception const &e) {
-                    errorSignal_(Error {ErrorType::TransportError,
-                                        std::string {"json parse error: "} + e.what()});
-                }
-                // A callback disconnected: a read on the closed socket would fail and reconnect.
-                if (state_ == ConnectionState::Disconnected) {
-                    return;
-                }
-            }
+                              try {
+                                  handleReceivedMsg(json::parse(line));
+                              } catch (std::exception const &e) {
+                                  errorSignal_(
+                                          Error {ErrorType::TransportError,
+                                                 std::string {"json parse error: "} + e.what()});
+                              }
+                              // A callback disconnected: a read on the closed socket would fail and
+                              // reconnect.
+                              if (state_ == ConnectionState::Disconnected) {
+                                  return;
+                              }
+                          }
 
-            read();
-        });
+                          read();
+                      }));
     });
 }
 
@@ -410,34 +445,37 @@ auto Transport::flush() -> void
         return;
     }
 
-    auto const messages = std::move(pendingWrites_);
+    // Owned by the write's handler: a client frame is masked and sent in chunks, read from this
+    // buffer until the write completes.
+    auto const messages = std::make_shared<std::string const>(std::move(pendingWrites_));
     auto const commands = std::move(pendingCommands_);
     pendingWrites_.clear();
     pendingCommands_.clear();
 
     if (config_.logHandler) {
-        config_.logHandler({LogLevel::Debug, "sending message", {{"message", messages}}});
+        config_.logHandler({LogLevel::Debug, "sending message", {{"message", *messages}}});
     }
 
     isWriting_ = true;
     withWs([&](auto &ws) {
-        ws.async_write(net::buffer(messages), [this, cmds = std::move(commands)](
-                                                      beast::error_code ec, std::size_t) mutable {
-            isWriting_ = false;
+        ws.async_write(net::buffer(*messages),
+                       guarded([this, messages, cmds = std::move(commands)](beast::error_code ec,
+                                                                            std::size_t) mutable {
+                           isWriting_ = false;
 
-            if (ec) {
-                errorSignal_(toError(ec));
-                return;
-            }
+                           if (ec) {
+                               errorSignal_(toError(ec));
+                               return;
+                           }
 
-            for (auto &cmd : cmds) {
-                sentCommands_.emplace(cmd.id, std::move(cmd));
-            }
+                           for (auto &cmd : cmds) {
+                               sentCommands_.emplace(cmd.id, std::move(cmd));
+                           }
 
-            if (!pendingWrites_.empty()) {
-                flush();
-            }
-        });
+                           if (!pendingWrites_.empty()) {
+                               flush();
+                           }
+                       }));
     });
 }
 
@@ -474,7 +512,7 @@ auto Transport::closeConnection() -> void
 auto Transport::startPingTimer() -> void
 {
     pingTimer_.expires_after(pingInterval_);
-    pingTimer_.async_wait([this](boost::system::error_code ec) {
+    pingTimer_.async_wait(guarded([this](boost::system::error_code ec) {
         if (ec) {
             if (ec == net::error::operation_aborted) {
                 return;
@@ -484,7 +522,7 @@ auto Transport::startPingTimer() -> void
         }
 
         reconnect(Error {ErrorType::NoPing, "no ping"});
-    });
+    }));
 }
 
 auto Transport::startTokenRefreshTimer(std::uint32_t ttlSeconds) -> void
@@ -495,7 +533,7 @@ auto Transport::startTokenRefreshTimer(std::uint32_t ttlSeconds) -> void
     }
 
     tokenRefreshTimer_.expires_after(expiryTime);
-    tokenRefreshTimer_.async_wait([this](boost::system::error_code ec) {
+    tokenRefreshTimer_.async_wait(guarded([this](boost::system::error_code ec) {
         if (ec) {
             if (ec == net::error::operation_aborted) {
                 return;
@@ -509,7 +547,7 @@ auto Transport::startTokenRefreshTimer(std::uint32_t ttlSeconds) -> void
         }
 
         send(makeCommand(RefreshRequest {token_}));
-    });
+    }));
 }
 
 auto Transport::calculateBackoffDelay() -> std::chrono::milliseconds

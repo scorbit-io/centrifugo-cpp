@@ -1,6 +1,7 @@
 #pragma once
 
 #include <chrono>
+#include <memory>
 #include <optional>
 #include <random>
 #include <unordered_set>
@@ -46,6 +47,25 @@ struct UrlComponents {
     bool secure = false;
 };
 
+// Calls handler only while *alive, and keeps the connection it was started on (keep) alive
+// until it completes: asio's composed operations touch their stream even when aborted. Callable
+// exactly as handler is, so asio's overload checks (async_connect probes for a connect
+// condition) see the handler's own signature.
+template<typename F>
+struct Guarded {
+    std::shared_ptr<bool> alive;
+    std::shared_ptr<void> keep;
+    F handler;
+
+    template<typename... Args>
+    auto operator()(Args &&...args) -> decltype(std::declval<F &>()(std::forward<Args>(args)...))
+    {
+        if (*alive) {
+            handler(std::forward<Args>(args)...);
+        }
+    }
+};
+
 class Transport
 {
 public:
@@ -59,6 +79,11 @@ public:
 
     Transport(net::strand<net::io_context::executor_type> const &strand, std::string &&url,
               ClientConfig &&config);
+    // Handlers still pending afterwards do nothing; destroy on the strand.
+    ~Transport();
+
+    Transport(Transport const &) = delete;
+    auto operator=(Transport const &) -> Transport & = delete;
 
     auto state() const -> ConnectionState;
     auto config() const -> ClientConfig const & { return config_; }
@@ -113,7 +138,15 @@ private:
     template<typename F>
     auto withWs(F &&func) -> decltype(auto)
     {
-        return std::visit(std::forward<F>(func), ws_);
+        return std::visit(std::forward<F>(func), conn_->ws);
+    }
+
+    // A completion handler that does nothing once this transport is destroyed, and keeps the
+    // current connection's stream alive until it runs.
+    template<typename F>
+    auto guarded(F &&handler) -> Guarded<std::decay_t<F>>
+    {
+        return {alive_, conn_, std::forward<F>(handler)};
     }
 
     template<typename... Args>
@@ -149,8 +182,9 @@ private:
             beast::get_lowest_layer(ws).close(ignore);
         });
 
-        // 2. Reconstruct in-place
-        ws_.emplace<StreamType>(std::forward<Args>(args)...);
+        // 2. A new connection: the old one lives on in its pending handlers until they finish
+        conn_ = std::make_shared<Connection>(std::in_place_type<StreamType>,
+                                             std::forward<Args>(args)...);
     }
 
 private:
@@ -158,13 +192,27 @@ private:
     using WssStream = websocket::stream<beast::ssl_stream<tcp::socket>>;
     using WebSocketVariant = std::variant<WsStream, WssStream>;
 
+    // One connection attempt's stream and read buffer, shared with its pending handlers.
+    struct Connection {
+        template<typename Stream, typename... Args>
+        explicit Connection(std::in_place_type_t<Stream> type, Args &&...args)
+            : ws {type, std::forward<Args>(args)...}
+        {
+        }
+
+        WebSocketVariant ws;
+        beast::flat_buffer buffer;
+    };
+
+    // Shared with every pending handler; false once the transport is destroyed.
+    std::shared_ptr<bool> alive_ = std::make_shared<bool>(true);
+
     ClientConfig config_;
     std::string url_;
 
     tcp::resolver resolver_;
     std::optional<net::ssl::context> sslContext_;
-    WebSocketVariant ws_;
-    beast::flat_buffer buffer_;
+    std::shared_ptr<Connection> conn_;
     net::steady_timer reconnectTimer_;
     net::steady_timer pingTimer_;
     net::steady_timer tokenRefreshTimer_;
