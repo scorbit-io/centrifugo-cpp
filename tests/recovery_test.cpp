@@ -1526,9 +1526,217 @@ auto testBounceFromSubscribing() -> bool
                        {1}, "subscribe commands sent")
         && expectCodes(h.snapshot(&SubHarness::errors_), {}, "errors");
 }
+
+// A client whose TCP connect never completes: 192.0.2.1 (TEST-NET-1) is never routed back.
+class BlackholeClient
+{
+public:
+    BlackholeClient()
+    {
+        auto config = centrifugo::ClientConfig {};
+        config.getToken = []() -> outcome::result<std::string> { return std::string {"token"}; };
+        config.minReconnectDelay = 20ms;
+        config.maxReconnectDelay = 100ms;
+        client_ = std::make_unique<centrifugo::Client>(
+                strand_, "ws://192.0.2.1:8000/connection/websocket", config);
+        client_->onConnecting([this](centrifugo::Error const &) { ++connecting_; });
+        thread_ = std::thread {[this] { ioc_.run(); }};
+    }
+
+    ~BlackholeClient()
+    {
+        onStrand([this] {
+            client_.reset();
+            retired_.clear();
+        });
+        work_.reset();
+        ioc_.stop();
+        thread_.join();
+    }
+
+    BlackholeClient(BlackholeClient const &) = delete;
+    auto operator=(BlackholeClient const &) -> BlackholeClient & = delete;
+
+    // Runs f on the client's strand and waits for it.
+    template<typename F>
+    auto onStrand(F f) -> void
+    {
+        auto done = std::promise<void> {};
+        net::post(strand_, [&] {
+            f();
+            done.set_value();
+        });
+        done.get_future().wait();
+    }
+
+    auto client() -> centrifugo::Client & { return *client_; }
+    auto destroyClient() -> void
+    {
+        onStrand([this] { client_.reset(); });
+    }
+    auto recreate() -> void
+    {
+        onStrand([this] {
+            auto config = centrifugo::ClientConfig {};
+            config.getToken = []() -> outcome::result<std::string> {
+                return std::string {"token"};
+            };
+            client_ = std::make_unique<centrifugo::Client>(
+                    strand_, "ws://192.0.2.1:8000/connection/websocket", config);
+        });
+    }
+    auto connecting() const -> int { return connecting_; }
+    // Keeps the current client alive but set aside, as an app replacing it does.
+    auto retire() -> void
+    {
+        onStrand([this] { retired_.push_back(std::move(client_)); });
+    }
+    auto destroyRetired() -> void
+    {
+        onStrand([this] { retired_.clear(); });
+    }
+
+private:
+    net::io_context ioc_;
+    net::executor_work_guard<net::io_context::executor_type> work_ {ioc_.get_executor()};
+    net::strand<net::io_context::executor_type> strand_ {net::make_strand(ioc_)};
+    std::vector<std::unique_ptr<centrifugo::Client>> retired_;
+    std::unique_ptr<centrifugo::Client> client_;
+    std::atomic<int> connecting_ {0};
+    std::thread thread_;
+};
+
+// disconnect() while the TCP connect is in flight: the aborted connect must not start another.
+auto testDisconnectWhileConnecting() -> bool
+{
+    auto b = BlackholeClient {};
+    b.onStrand([&] { (void)b.client().connect(); });
+    std::this_thread::sleep_for(300ms); // the connect is in flight
+    b.onStrand([&] { b.client().disconnect(); });
+    auto const after = b.connecting();
+    std::this_thread::sleep_for(1500ms); // many reconnect delays
+    auto state = centrifugo::ConnectionState::Connecting;
+    b.onStrand([&] { state = b.client().state(); });
+    return expectCodes({b.connecting()}, {after}, "onConnecting after disconnect")
+        && expectCodes({static_cast<int>(state)},
+                       {static_cast<int>(centrifugo::ConnectionState::Disconnected)}, "state");
+}
+
+// A client destroyed with its connect in flight: the cancelled handlers must not touch it.
+auto testDestroyWhileConnecting() -> bool
+{
+    auto b = BlackholeClient {};
+    for (auto i = 0; i < 20; ++i) {
+        b.recreate();
+        b.onStrand([&] { (void)b.client().connect(); });
+        std::this_thread::sleep_for(30ms);
+        b.destroyClient();
+        std::this_thread::sleep_for(20ms); // the aborted handlers run now
+    }
+    return true; // a handler on the destroyed client would crash, or fail under ASan
+}
+
+// Reconnected at once: the new attempt replaces the stream while the aborted connect on the old
+// one is still finishing.
+auto testReconnectWhileConnecting() -> bool
+{
+    auto b = BlackholeClient {};
+    for (auto i = 0; i < 20; ++i) {
+        b.onStrand([&] { (void)b.client().connect(); });
+        std::this_thread::sleep_for(30ms);
+        b.onStrand([&] {
+            b.client().disconnect();
+            (void)b.client().connect();
+        });
+        std::this_thread::sleep_for(20ms);
+        b.onStrand([&] { b.client().disconnect(); });
+    }
+    return true; // an old stream freed under its pending connect would fail under ASan
+}
+
+// An app's rebuild, twice: disconnect A while connecting, set it aside, build B; disconnect B
+// while connecting, set it aside, then destroy both while their aborted connects finish.
+auto testRebuildWhileConnecting() -> bool
+{
+    auto b = BlackholeClient {};
+    for (auto i = 0; i < 10; ++i) {
+        b.recreate();
+        b.onStrand([&] { (void)b.client().connect(); }); // A
+        std::this_thread::sleep_for(30ms);
+        b.onStrand([&] { b.client().disconnect(); });
+        b.retire();
+        b.recreate();
+        b.onStrand([&] { (void)b.client().connect(); }); // B
+        std::this_thread::sleep_for(30ms);
+        b.onStrand([&] { b.client().disconnect(); });
+        b.retire();
+        // Past the reconnect delay: a client that came back to life is connecting again by now.
+        std::this_thread::sleep_for(300ms);
+        b.destroyRetired();
+        std::this_thread::sleep_for(20ms);
+    }
+    return true; // a handler on a destroyed client would fail under ASan
+}
 }
 
 // Optional argument: run only the tests whose name contains it.
+// disconnect() in the turn that started the connect: the resolve still succeeds, and its result
+// must not open a connection.
+auto testDisconnectBeforeResolve() -> bool
+{
+    auto accepted = std::atomic<int> {0};
+    auto server = net::io_context {};
+    auto acceptor = net::ip::tcp::acceptor {server, {net::ip::make_address("127.0.0.1"), 0}};
+    auto const port = acceptor.local_endpoint().port();
+    auto peers = std::vector<net::ip::tcp::socket> {};
+    std::function<void()> accept = [&] {
+        acceptor.async_accept([&](boost::system::error_code ec, net::ip::tcp::socket peer) {
+            if (ec) {
+                return;
+            }
+            ++accepted;
+            peers.push_back(std::move(peer));
+            accept();
+        });
+    };
+    accept();
+    auto serverThread = std::thread {[&] { server.run(); }};
+
+    auto ioc = net::io_context {};
+    auto work = net::make_work_guard(ioc);
+    auto strand = net::make_strand(ioc);
+    auto config = centrifugo::ClientConfig {};
+    config.getToken = []() -> outcome::result<std::string> { return std::string {"token"}; };
+    auto client = std::make_unique<centrifugo::Client>(
+            strand, "ws://127.0.0.1:" + std::to_string(port) + "/connection/websocket", config);
+    auto clientThread = std::thread {[&] { ioc.run(); }};
+    auto onStrand = [&](auto f) {
+        auto done = std::promise<void> {};
+        net::post(strand, [&] {
+            f();
+            done.set_value();
+        });
+        done.get_future().wait();
+    };
+
+    for (auto i = 0; i < 20; ++i) {
+        onStrand([&] {
+            (void)client->connect();
+            client->disconnect();
+        });
+        std::this_thread::sleep_for(20ms);
+    }
+    std::this_thread::sleep_for(300ms);
+    onStrand([&] { client.reset(); });
+    work.reset();
+    ioc.stop();
+    clientThread.join();
+    net::post(server, [&] { acceptor.close(); });
+    server.stop();
+    serverThread.join();
+    return expectCodes({accepted.load()}, {0}, "connections accepted");
+}
+
 auto main(int argc, char **argv) -> int
 {
     auto const filter = std::string {argc > 1 ? argv[1] : ""};
@@ -1568,6 +1776,12 @@ auto main(int argc, char **argv) -> int
             {"sub: unsubscribe + subscribe from onSubscribing", testBounceFromSubscribing},
             {"sub token: survives a 60 s TTL", testSubTokenSurvivesTtl},
             {"sub token: static token expires without refresh", testSubTokenExpiresWithoutRefresh},
+            {"lifecycle: disconnect while connecting stays disconnected",
+             testDisconnectWhileConnecting},
+            {"lifecycle: destroyed while connecting", testDestroyWhileConnecting},
+            {"lifecycle: reconnected while connecting", testReconnectWhileConnecting},
+            {"lifecycle: rebuilt twice while connecting", testRebuildWhileConnecting},
+            {"lifecycle: disconnect before the resolve completes", testDisconnectBeforeResolve},
     };
     auto failed = 0;
     for (auto const &[name, test] : tests) {
