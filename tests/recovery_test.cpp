@@ -189,6 +189,7 @@ public:
         });
         client_.onSubscribed([this](std::string const &ch) {
             update([this, ch] {
+                subscribedChannels_.push_back(ch);
                 if (ch == channel_) {
                     ++subscribedCount_;
                 }
@@ -317,6 +318,10 @@ public:
     auto notRecoveredLogs() -> int { return snapshot(&Harness::notRecoveredLogs_); }
     auto connectSubs() -> std::vector<json> { return snapshot(&Harness::connectSubs_); }
     auto connectRequests() -> std::vector<json> { return snapshot(&Harness::connectRequests_); }
+    auto subscribedChannels() -> std::vector<std::string>
+    {
+        return snapshot(&Harness::subscribedChannels_);
+    }
     auto tokenCalls() -> int { return snapshot(&Harness::tokenCalls_); }
     auto subscribed() -> int { return snapshot(&Harness::subscribedCount_); }
     auto unsubscribed() -> int { return snapshot(&Harness::unsubscribedCount_); }
@@ -425,6 +430,7 @@ private:
     std::vector<int> errorCodes_;
     std::vector<json> connectSubs_;
     std::vector<json> connectRequests_;
+    std::vector<std::string> subscribedChannels_;
     std::vector<int> publishSendCodes_;
     std::vector<int> publishResults_;
 };
@@ -672,14 +678,16 @@ auto connectRequest(Harness &h, std::size_t n) -> json
 }
 
 // Listed cache channel: the first connect gets the latest publication, later ones the position.
+// A listed channel missing from the token is ignored: no error, no subscription.
 auto testFirstConnectRecoverCache() -> bool
 {
     auto const channel = "cachec:" + uniqueSuffix();
-    if (!publish(channel, "W") || !publish(channel, "X")) {
+    auto const notInToken = "cachec:not-in-token-" + uniqueSuffix();
+    if (!publish(channel, "W") || !publish(channel, "X") || !publish(notInToken, "Z")) {
         return false;
     }
     auto h = Harness {channel};
-    h.setFirstConnectRecover({channel, "cachec:not-in-token"});
+    h.setFirstConnectRecover({channel, notInToken});
     if (!connectAndSettle(h, 0, 1) || !expectEq(h.received(), {"X"}, "first connect")
         || !expectJson(connectRequest(h, 0), {{"recover", true}}, "first connect command")
         || !disconnectAndWait(h) || !publish(channel, "Y") || !connectAndSettle(h, 1, 2)
@@ -694,7 +702,12 @@ auto testFirstConnectRecoverCache() -> bool
                   << '\n';
         return false;
     }
-    return expectEq(h.received(), {"X", "Y"}, "no-change reconnect") && expectClean(h);
+    if (auto const errors = h.errorCodes(); !errors.empty()) {
+        std::cerr << "  FAIL: " << errors.size() << " error(s), first " << errors.front() << '\n';
+        return false;
+    }
+    return expectEq(h.subscribedChannels(), {channel, channel, channel}, "subscribed channels")
+        && expectEq(h.received(), {"X", "Y"}, "no-change reconnect") && expectClean(h);
 }
 
 // Unlisted: unchanged from v0.10.2, no subs entry and nothing delivered.
