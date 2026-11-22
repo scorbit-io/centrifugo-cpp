@@ -189,6 +189,7 @@ public:
         });
         client_.onSubscribed([this](std::string const &ch) {
             update([this, ch] {
+                subscribedChannels_.push_back(ch);
                 if (ch == channel_) {
                     ++subscribedCount_;
                 }
@@ -237,6 +238,14 @@ public:
     auto disconnect() -> void
     {
         net::post(strand_, [this] { client_.disconnect(); });
+    }
+
+    // Takes effect from the next connect command (posted, so ahead of a later connect()).
+    auto setFirstConnectRecover(std::vector<std::string> channels) -> void
+    {
+        net::post(strand_, [this, channels = std::move(channels)]() mutable {
+            client_.setFirstConnectRecoverChannels(std::move(channels));
+        });
     }
 
     // Runs once, on the strand, when the client next starts (re)connecting.
@@ -308,6 +317,11 @@ public:
     auto errorCodes() -> std::vector<int> { return snapshot(&Harness::errorCodes_); }
     auto notRecoveredLogs() -> int { return snapshot(&Harness::notRecoveredLogs_); }
     auto connectSubs() -> std::vector<json> { return snapshot(&Harness::connectSubs_); }
+    auto connectRequests() -> std::vector<json> { return snapshot(&Harness::connectRequests_); }
+    auto subscribedChannels() -> std::vector<std::string>
+    {
+        return snapshot(&Harness::subscribedChannels_);
+    }
     auto tokenCalls() -> int { return snapshot(&Harness::tokenCalls_); }
     auto subscribed() -> int { return snapshot(&Harness::subscribedCount_); }
     auto unsubscribed() -> int { return snapshot(&Harness::unsubscribedCount_); }
@@ -359,21 +373,23 @@ private:
                     update([this] { ++notRecoveredLogs_; });
                 }
             } else if (entry.message == "received message") {
-                recordConnectReply(entry.fields.value("message", std::string {}));
+                recordConnect(entry.fields.value("message", std::string {}), connectSubs_);
+            } else if (entry.message == "sending message") {
+                recordConnect(entry.fields.value("message", std::string {}), connectRequests_);
             }
         };
         return config;
     }
 
-    // Keeps this channel's entry of every connect reply, to inspect recovery flags.
-    auto recordConnectReply(std::string const &message) -> void
+    // Keeps this channel's subs entry of every connect command or reply.
+    auto recordConnect(std::string const &message, std::vector<json> &into) -> void
     {
         auto lines = std::istringstream {message};
         for (auto line = std::string {}; std::getline(lines, line);) {
             auto const j = json::parse(line, nullptr, false);
             if (j.is_object() && j.contains("connect")) {
                 auto sub = j["connect"].value("subs", json::object()).value(channel_, json {});
-                update([this, &sub] { connectSubs_.push_back(std::move(sub)); });
+                update([&into, &sub] { into.push_back(std::move(sub)); });
             }
         }
     }
@@ -413,6 +429,8 @@ private:
     std::vector<std::uint64_t> offsets_;
     std::vector<int> errorCodes_;
     std::vector<json> connectSubs_;
+    std::vector<json> connectRequests_;
+    std::vector<std::string> subscribedChannels_;
     std::vector<int> publishSendCodes_;
     std::vector<int> publishResults_;
 };
@@ -638,6 +656,140 @@ auto testCacheAutoRecoverEmpty() -> bool
         std::cout << "  connect reply subs[" << channel << "]: " << sub.dump() << '\n';
     }
     return expectEq(h.received(), {}, "empty channel") && expectClean(h);
+}
+
+// SB-6852: first-connect recovery for listed server-side channels.
+
+auto expectJson(json const &actual, json const &expected, std::string const &what) -> bool
+{
+    if (actual == expected) {
+        return true;
+    }
+    std::cerr << "  FAIL: " << what << ": expected " << expected.dump() << ", got "
+              << actual.dump() << '\n';
+    return false;
+}
+
+// The connect command's subs entry for the harness channel, n-th connect (0-based).
+auto connectRequest(Harness &h, std::size_t n) -> json
+{
+    auto const requests = h.connectRequests();
+    return n < requests.size() ? requests[n] : json {"<no connect #" + std::to_string(n) + ">"};
+}
+
+// Listed cache channel: the first connect gets the latest publication, later ones the position.
+// A listed channel missing from the token is ignored: no error, no subscription.
+auto testFirstConnectRecoverCache() -> bool
+{
+    auto const channel = "cachec:" + uniqueSuffix();
+    auto const notInToken = "cachec:not-in-token-" + uniqueSuffix();
+    if (!publish(channel, "W") || !publish(channel, "X") || !publish(notInToken, "Z")) {
+        return false;
+    }
+    auto h = Harness {channel};
+    h.setFirstConnectRecover({channel, notInToken});
+    if (!connectAndSettle(h, 0, 1) || !expectEq(h.received(), {"X"}, "first connect")
+        || !expectJson(connectRequest(h, 0), {{"recover", true}}, "first connect command")
+        || !disconnectAndWait(h) || !publish(channel, "Y") || !connectAndSettle(h, 1, 2)
+        || !expectEq(h.received(), {"X", "Y"}, "reconnect after publish")
+        || !disconnectAndWait(h) || !connectAndSettle(h, 2, 2)) {
+        return false;
+    }
+    auto const second = connectRequest(h, 1);
+    if (!second.is_object() || second.value("epoch", std::string {}).empty()
+        || second.value("offset", 0) != 2) {
+        std::cerr << "  FAIL: reconnect must send the stored position, got " << second.dump()
+                  << '\n';
+        return false;
+    }
+    if (auto const errors = h.errorCodes(); !errors.empty()) {
+        std::cerr << "  FAIL: " << errors.size() << " error(s), first " << errors.front() << '\n';
+        return false;
+    }
+    return expectEq(h.subscribedChannels(), {channel, channel, channel}, "subscribed channels")
+        && expectEq(h.received(), {"X", "Y"}, "no-change reconnect") && expectClean(h);
+}
+
+// Unlisted: unchanged from v0.10.2, no subs entry and nothing delivered.
+auto testFirstConnectRecoverUnlisted() -> bool
+{
+    auto const channel = "cachec:" + uniqueSuffix();
+    if (!publish(channel, "X")) {
+        return false;
+    }
+    auto h = Harness {channel};
+    h.setFirstConnectRecover({"cachec:other"});
+    if (!connectAndSettle(h, 0, 0)) {
+        return false;
+    }
+    return expectEq(h.received(), {}, "unlisted channel")
+        && expectJson(connectRequest(h, 0), json {}, "no subs entry") && expectClean(h);
+}
+
+// A terminal disconnect drops the position, so the next connect() recovers like a first one.
+auto testFirstConnectRecoverAfterTerminal() -> bool
+{
+    auto const channel = "cachec:" + uniqueSuffix();
+    if (!publish(channel, "X")) {
+        return false;
+    }
+    auto h = Harness {channel};
+    h.setFirstConnectRecover({channel});
+    if (!connectAndSettle(h, 0, 1) || !apiDisconnect(h.user(), TERMINAL_CODE)
+        || !h.waitFor("terminal disconnect", [&] { return h.disconnectedCount() >= 1; })
+        || !publish(channel, "Y") || !connectAndSettle(h, 1, 2)) {
+        return false;
+    }
+    return expectEq(h.received(), {"X", "Y"}, "recovered after terminal disconnect")
+        && expectJson(connectRequest(h, 1), {{"recover", true}}, "connect after terminal")
+        && expectClean(h);
+}
+
+// Namespaces the broker can't recover from: the connect still succeeds, nothing is delivered,
+// and nothing is reported lost; live publications still arrive.
+auto runFirstConnectRecoverUnrecoverable(std::string const &ns) -> bool
+{
+    auto const channel = ns + ":" + uniqueSuffix();
+    if (ns == "plain" && !publish(channel, "X")) {
+        return false;
+    }
+    auto h = Harness {channel};
+    h.setFirstConnectRecover({channel});
+    if (!connectAndSettle(h, 0, 0) || !expectEq(h.received(), {}, "first connect")
+        || !publish(channel, "L") || !h.waitFor("L live", [&] { return h.receivedCount() >= 1; })
+        || !disconnectAndWait(h) || !connectAndSettle(h, 1, 1)) {
+        return false;
+    }
+    if (auto const errors = h.errorCodes(); !errors.empty()) {
+        std::cerr << "  FAIL: " << errors.size() << " error(s), first " << errors.front() << '\n';
+        return false;
+    }
+    return expectEq(h.received(), {"L"}, "live only") && expectClean(h);
+}
+
+auto testFirstConnectRecoverNoRecovery() -> bool
+{
+    return runFirstConnectRecoverUnrecoverable("plain");
+}
+
+auto testFirstConnectRecoverNoHistory() -> bool
+{
+    return runFirstConnectRecoverUnrecoverable("nohist");
+}
+
+// Why the list is opt-in: a listed stream channel replays its whole retained history.
+auto testFirstConnectRecoverStreamReplays() -> bool
+{
+    auto const channel = "stream:" + uniqueSuffix();
+    if (!publish(channel, "A") || !publish(channel, "B") || !publish(channel, "C")) {
+        return false;
+    }
+    auto h = Harness {channel};
+    h.setFirstConnectRecover({channel});
+    if (!connectAndSettle(h, 0, 3)) {
+        return false;
+    }
+    return expectEq(h.received(), {"A", "B", "C"}, "stream replay") && expectClean(h);
 }
 
 // Client::disconnect() from onSubscribing: no onSubscribed or publications may follow.
@@ -1751,6 +1903,13 @@ auto main(int argc, char **argv) -> int
             {"cache: first-connect delivery via auto_cache_recover",
              testCacheAutoRecoverFirstConnect},
             {"cache: auto_cache_recover on empty channel", testCacheAutoRecoverEmpty},
+            {"first connect: listed cache channel recovers", testFirstConnectRecoverCache},
+            {"first connect: unlisted channel unchanged", testFirstConnectRecoverUnlisted},
+            {"first connect: again after a terminal disconnect",
+             testFirstConnectRecoverAfterTerminal},
+            {"first connect: history without recovery", testFirstConnectRecoverNoRecovery},
+            {"first connect: no history", testFirstConnectRecoverNoHistory},
+            {"first connect: stream channel replays history", testFirstConnectRecoverStreamReplays},
             {"callbacks: disconnect from onSubscribing", testDisconnectFromSubscribing},
             {"callbacks: disconnect from onUnsubscribed", testDisconnectFromUnsubscribed},
             {"publish: accepted without a subscription", testPublishAccepted},
