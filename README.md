@@ -66,8 +66,8 @@ docker compose up -d # Starts Centrifugo server and JWT generator service to be 
 ## Integration Tests
 
 `tests/recovery_test.cpp` checks history recovery for server-side subscriptions (channels granted
-by the connection token) against a real Centrifugo (`stream:`, `cache:` and `cachec:` namespaces in
-`services/centrifugo/config.yaml`), including server-forced reconnects and token expiry, plus
+by the connection token) against a real Centrifugo (`stream:`, `cache:`, `cachec:`, `plain:` and `nohist:`
+namespaces in `services/centrifugo/config.yaml`), including server-forced reconnects and token expiry, plus
 subscription tokens and history on a closed `live:` namespace. It needs
 Docker and is built only in a top-level build (CTest label `integration`):
 
@@ -84,6 +84,20 @@ reconnect. For those channels, `onSubscribed` and any recovered `onPublication` 
 **before** `onConnected`. If the server cannot recover a gap, the client logs a
 `LogLevel::Error` entry ("server-side subscription not recovered"); publications may have been
 missed. Handlers should be idempotent.
+
+A first connect has no position to recover from, so by default it delivers nothing from history.
+To get a cache-mode channel's latest publication on a first connect (or whenever the client holds
+no position for it, such as after a terminal disconnect), list it:
+
+```cpp
+client.setFirstConnectRecoverChannels({"lobby:" + venueMachine});
+```
+
+Each listed channel with no stored position is sent as `{"recover": true}`; once it has a position,
+recovery uses that as usual. Call it on the client's strand; it applies from the next connect
+command. List only cache-mode channels: a stream-mode channel replays its whole retained history,
+and a cache-mode command channel would re-deliver its last command. Channels without recovery or
+history are unaffected, and a listed channel missing from the token is ignored by the server.
 
 ## Subscription Tokens and History
 

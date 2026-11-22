@@ -1,6 +1,8 @@
 #pragma once
 
 #include <optional>
+#include <string>
+#include <vector>
 
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/strand.hpp>
@@ -47,6 +49,14 @@ public:
                  PublishResultCallback onResult) -> outcome::result<void, Error>;
 
     auto send(nlohmann::json const &data) -> outcome::result<void, Error>;
+
+    // Server-side channels (JWT `channels` claim) to recover with no stored position: on a
+    // first connect, after a terminal disconnect, or after the server dropped the channel, each
+    // gets {recover: true}, so a cache-mode channel delivers its latest publication again.
+    // Channels with a position recover from it as usual. List only cache-mode channels: a
+    // stream-mode one replays its whole history. Replaces the previous list; applies from the
+    // next connect command. Call on the strand, or before the io_context runs.
+    auto setFirstConnectRecoverChannels(std::vector<std::string> channels) -> void;
 
     auto newSubscription(std::string const &channel)
             -> outcome::result<std::reference_wrapper<Subscription>, std::string>;

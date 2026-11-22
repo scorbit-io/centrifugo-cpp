@@ -74,6 +74,13 @@ public:
                     recoveryRequested_.emplace(channel, state.epoch);
                 }
             }
+            // No position to send, so not in recoveryRequested_: nothing to have lost.
+            // Governing: SB-6852 (lobby on a device's first connect).
+            for (auto const &channel : firstConnectRecover_) {
+                if (serverSubscriptions_.count(channel) == 0) {
+                    subs.emplace(channel, ConnectSubRequest {true, {}, 0});
+                }
+            }
             return subs;
         });
 
@@ -281,6 +288,12 @@ public:
         return outcome::success();
     }
 
+    auto setFirstConnectRecoverChannels(std::vector<std::string> channels) -> void
+    {
+        firstConnectRecover_ = std::unordered_set<std::string> {
+                std::make_move_iterator(channels.begin()), std::make_move_iterator(channels.end())};
+    }
+
     auto send(nlohmann::json const &data) -> outcome::result<void, Error>
     {
         if (transport_.state() != ConnectionState::Connected) {
@@ -402,6 +415,8 @@ private:
         bool recoverable {false};
     };
     std::unordered_map<std::string, ServerSubState> serverSubscriptions_;
+    // Server-side channels asking for recovery when they have no stored position.
+    std::unordered_set<std::string> firstConnectRecover_;
     // Server-side channel -> epoch sent with the last connect command.
     std::unordered_map<std::string, std::string> recoveryRequested_;
     // Command id -> result callback of a client-level publish awaiting its reply.
@@ -531,5 +546,10 @@ auto Client::publish(std::string const &channel, nlohmann::json const &data,
 auto Client::send(nlohmann::json const &data) -> outcome::result<void, Error>
 {
     return pImpl->send(data);
+}
+
+auto Client::setFirstConnectRecoverChannels(std::vector<std::string> channels) -> void
+{
+    pImpl->setFirstConnectRecoverChannels(std::move(channels));
 }
 }

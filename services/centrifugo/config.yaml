@@ -29,6 +29,12 @@ channel:
       history_ttl: "300s"
       force_recovery: true
       force_recovery_mode: "cache"
+    # History without recovery, like the broker's control_machine (SB-6852).
+    - name: "plain"
+      history_size: 10
+      history_ttl: "300s"
+    # No history at all (SB-6852).
+    - name: "nohist"
     # Closed like the API's live_dmd: subscribing needs a subscription token.
     - name: "live"
       allow_subscribe_for_client: false
